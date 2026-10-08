@@ -1,15 +1,15 @@
 # Biblioteca del Core de Vídeo (`vc`)
 
 Librería en **C** con núcleo optimizado en **ensamblador** para programar juegos
-sobre el Core de Vídeo del computador 6502 (Tang Nano 9K). Implementa todas las
-capacidades del core: tiles + tilemap, sprites (OAM), scroll, split de raster,
-modo texto y colisión sprite↔tile.
+sobre el Core de Vídeo del computador 6502 (Sipeed Tang Nano 9K / Gowin GW1NR-9).
+Implementa todas las capacidades del core: tiles + tilemap, sprites (OAM), scroll,
+split de raster, modo texto, colisión sprite↔tile y paletas programables.
 
 > **Referencia de hardware:** el comportamiento del core (registros, semántica,
-> paletas, límites) se documenta en el **manual de programación del Core de Vídeo**
-> (`07-MANUAL-PROGRAMACION.md`), que forma parte del **proyecto FPGA** del core.
-> Ese manual no se incluye en este repositorio: consúltalo junto al proyecto del
-> hardware. Esta librería lo refleja y encapsula su API.
+> paletas, límites) se documenta en el *Manual de Programación del Core de Vídeo*
+> (v2.8, hardware `6502_board_v3`), incluido en este repositorio como
+> [`07-MANUAL-PROGRAMACION.md`](07-MANUAL-PROGRAMACION.md). Esta librería lo refleja
+> y encapsula su API; no se necesita conocer el VHDL del core.
 
 ## Archivos
 
@@ -17,6 +17,7 @@ modo texto y colisión sprite↔tile.
 |---------|-----|
 | `src/video.h` | API pública: registros, constantes y prototipos |
 | `src/video.s` | Núcleo en ensamblador: puerto indirecto, VBLANK, volcados masivos |
+| `src/collide.s` | Núcleo en ensamblador: colisiones AABB |
 | `src/gfx.c` | Alto nivel en C: texto, helpers de fondo y utilidades |
 | `output/vc.lib` | Biblioteca estática reutilizable (video.o + collide.o + gfx.o) |
 
@@ -77,7 +78,7 @@ int main(void) {
     vc_wait_ready();          /* 1. esperar inicialización de VRAM */
     vc_wait_vblank();
 
-    vc_clear_vram();          /* 2. limpiar tilemap + atributos + OAM */
+    vc_clear_vram();          /* 2. limpiar VRAM (setup por hardware) */
     vc_put_str(2, 2, "HOLA MUNDO");
 
     while (1) {
@@ -110,6 +111,7 @@ ld65 -C config/programa.cfg -o output/prog.bin build/prog.o output/vc.lib \
 | `vc_wait_vblank()` | Espera a **entrar** en VBLANK |
 | `vc_wait_vblank_end()` | Espera a **salir** de VBLANK |
 | `vc_status()` | Lee `$D803` (bits `VC_STATUS_*`) |
+| `vc_wait_setup()` | Espera a que termine el setup de VRAM (`$D817` bit0 `BUSY=0`) |
 
 ### Limpieza de VRAM (recomendado al arrancar)
 
@@ -118,22 +120,32 @@ Tras `VIDEO_READY`, la VRAM ya viene inicializada por el hardware (**tilemap a
 tu propio mundo, limpia para partir de un estado conocido:
 
 ```c
-vc_clear_vram();   /* tilemap a tile 0 + atributos a 0 + OAM deshabilitado */
+vc_clear_vram();   /* setup por hardware: limpia VRAM + recarga la fuente */
 ```
 
-> ⚠️ `vc_clear_vram()` **NO** toca los patrones de tiles: la fuente de texto
-> ocupa `$20-$7F` y un "clear de patrones" **la borraría**. Por eso existen
-> `vc_clear_bg_patterns()`/`vc_clear_spr_patterns()` por separado, y solo debes
-> llamarlas si vas a reemplazar **todo** el tileset sin usar texto.
+`vc_clear_vram()` usa el **setup de VRAM por hardware** del core (`$D816`/`$D817`),
+la misma máquina que inicializa la VRAM al arrancar. Limpia tilemap y atributos,
+borra los patrones de fondo y de sprite, **vuelve a expandir la fuente de texto**
+y deshabilita los 32 sprites. Todo en **~120-275 µs** (en vez del bucle celda a
+celda, que tardaría ~ms). Es la forma recomendada de **cambiar de escena**.
 
-Funciones individuales:
+> ⚠️ **`vc_clear_vram()` borra los patrones** (los de fondo y los de sprite). El
+> setup **recarga la fuente** `$20-$7F` automáticamente, así que el texto sigue
+> disponible tras limpiar. **Pero si habías dibujado tus propios tiles en
+> `$20-$7F`, se pierden** (ese rango siempre vuelve a ser la fuente).
+>
+> Mientras el setup corre (`BUSY=1`), las **escrituras del CPU a VRAM/OAM se
+> ignoran**; `vc_clear_vram()` **espera a que termine** antes de retornar, así que
+> puedes dibujar tu mundo justo después.
+
+Funciones individuales (no usan el setup; control fino):
 
 | Función | Descripción |
 |---------|-------------|
-| `vc_clear_vram()` | tilemap a 0 + atributos a 0 + OAM apagado (sin tocar patrones) |
+| `vc_clear_vram()` | Setup HW: limpia tilemap+attrs+patrones, recarga fuente, OAM off |
 | `vc_fill_tilemap(tile)` | Rellena las 2048 celdas del tilemap con `tile` |
 | `vc_clear_attr()` | Atributos a 0 (paleta 0, sin flags) |
-| `vc_clear_bg_patterns()` | Los 256 patrones de fondo a 0 ⚠️ borra la fuente |
+| `vc_clear_bg_patterns()` | Los 256 patrones de fondo a 0 ⚠️ borra la fuente (recuperable con `vc_clear_vram()`) |
 | `vc_clear_spr_patterns()` | El banco de patrones de sprite a 0 |
 | `vc_clear_oam()` | Deshabilita los 32 sprites |
 
@@ -141,7 +153,8 @@ Funciones individuales:
 > **después** de limpiar.
 
 > **Regla de oro:** mueve sprites, escribe OAM/VRAM y scroll **durante el
-> VBLANK**, o verás sprites "partidos" a mitad de frame.
+> VBLANK**, o verás sprites "partidos" a mitad de frame. Dispara el setup de
+> VRAM en VBLANK para evitar el rasgado de ~1 frame mientras limpia.
 
 ### Escritura a VRAM (puerto indirecto)
 
@@ -173,8 +186,9 @@ automáticamente con el área.
 | `vc_copy_attr(src)` | Copia 2048 bytes de RAM a los atributos |
 | `vc_blit_screen(src)` | Copia 40×30 celdas (1200 B) al área visible |
 
-Paletas de fondo: `VC_BGPAL_TEXT`, `VC_BGPAL_TERRAIN`, `VC_BGPAL_VEGETATION`,
-`VC_BGPAL_TEXTGREEN`.
+Paletas de fondo (presets por defecto): `VC_BGPAL_0` (azul/cian/blanco),
+`VC_BGPAL_1` (marrón/gris/blanco), `VC_BGPAL_2` (verdes), `VC_BGPAL_3` (gris/marrón/verde).
+Son índices de paleta reprogramables; ver *Colores: cómo se codifican*.
 
 ### Colores: cómo se codifican
 
@@ -190,39 +204,55 @@ color del pixel = (bit_plano1 << 1) | bit_plano0     ->  0..3
 En los arrays de patrón, cada byte es una fila de 8 píxeles. El índice 0 del **fondo**
 y de **sprite** es **transparente**.
 
-**2. La paleta traduce índice -> RGB.** Los valores de arriba son los **por defecto**
-(al arrancar), pero **se pueden reprogramar** desde el CPU (ver más abajo). Hay 4
-paletas de fondo y 4 de sprite. RGB por defecto (manual del core §4):
+**2. La paleta traduce índice -> RGB.** Hay **4 paletas de fondo y 4 de sprite**, en
+**bancos separados**:
+
+- **Fondo:** paletas 0-3 (constantes `VC_BGPAL_0`..`VC_BGPAL_3`).
+- **Sprite:** paletas 0-3 (constantes `VC_SPPAL_0`..`VC_SPPAL_3`).
+
+> ⚠️ **Los bancos son independientes.** Reprogramar una paleta de fondo **no** afecta
+a las de sprite (ni al revés), aunque compartan el mismo número de paleta. Fondo y
+sprite usan **entradas de paleta distintas** en el hardware: fondo 0-15, sprite 16-31
+(manual §4.2 y §4.4).
+
+Los **nombres de las constantes son neutros** (`VC_BGPAL_*`, `VC_SPPAL_*`) porque las
+paletas son **reprogramables**: su color no es fijo. Al arrancar valen estos **presets
+por defecto** (manual del core §4):
 
 | Paleta de SPRITE | color0 | color1 | color2 | color3 |
 |------------------|--------|--------|--------|--------|
-| 0 `VC_SPPAL_HEART` | — | piel `#FF8800` | marrón `#884400` | negro `#000000` |
-| 1 `VC_SPPAL_BLUE` | — | azul `#0000FF` | cian `#00FFFF` | blanco `#FFFFFF` |
-| 2 `VC_SPPAL_MAGENTA` | — | magenta `#FF00FF` | rojo `#FF0000` | blanco `#FFFFFF` |
-| 3 `VC_SPPAL_GREEN` | — | verde `#00FF00` | naranja `#FF8800` | blanco `#FFFFFF` |
+| 0 `VC_SPPAL_0` | — | piel `#FF8800` | marrón `#884400` | negro `#000000` |
+| 1 `VC_SPPAL_1` | — | azul `#0000FF` | cian `#00FFFF` | blanco `#FFFFFF` |
+| 2 `VC_SPPAL_2` | — | magenta `#FF00FF` | rojo `#FF0000` | blanco `#FFFFFF` |
+| 3 `VC_SPPAL_3` | — | verde `#00FF00` | naranja `#FF8800` | blanco `#FFFFFF` |
 
-| Paleta de FONDO | color0 | color1 | color2 | color3 |
+| Paleta de FONDO | color0 | color1 | color2 | color3 (tinta de texto) |
 |-----------------|--------|--------|--------|--------|
-| 0 `VC_BGPAL_TEXT` | — | azul | cian | blanco |
-| 1 `VC_BGPAL_TERRAIN` | — | marrón | gris | blanco |
-| 2 `VC_BGPAL_VEGETATION` | — | verde | verde oscuro | verde |
-| 3 `VC_BGPAL_TEXTGREEN` | — | gris | marrón | verde |
+| 0 `VC_BGPAL_0` | — | azul | cian | blanco |
+| 1 `VC_BGPAL_1` | — | marrón | gris | blanco |
+| 2 `VC_BGPAL_2` | — | verde | verde oscuro | verde |
+| 3 `VC_BGPAL_3` | — | gris | marrón | verde |
+
+> Los colores de la tabla son **presets**: puedes reescribir cualquier entrada
+> (ver *Paletas programables* más abajo) y entonces el nombre `VC_BGPAL_n`/`VC_SPPAL_n`
+> seguirá identificando la **paleta n**, pero su color será el que hayas puesto.
 
 **Cómo se usa:**
 
 ```c
 /* FONDO: el patrón usa indices 0-3; la celda elige la paleta */
 vc_load_bg_pattern(tile, plano0, plano1);            /* dibujo (indices 0-3) */
-vc_set_cell_attr(col, row, VC_BGPAL_TERRAIN, 0);     /* paleta 1 -> marron/gris/blanco */
+vc_set_cell_attr(col, row, VC_BGPAL_1, 0);           /* paleta 1 (preset: marrón/gris/blanco) */
 
 /* SPRITE: el patron usa indices 0-3; FLAGS elige la paleta */
 vc_load_spr_pattern(0, plano0, plano1);              /* dibujo (indices 0-3) */
-s.flags = VC_SPPAL_HEART;                            /* piel / marron / negro */
+s.flags = VC_SPPAL_0;                                /* paleta 0 (preset: piel/marrón/negro) */
 ```
 
 > En resumen: **no escribes RGB en el patrón**. Compones el color con
 > `indice (0-3)` + `paleta`. Para cambiar los colores de un dibujo sin redibujarlo,
-> cambia la paleta (atributo de la celda o `FLAGS` del sprite), no el patrón.
+> cambia la paleta (atributo de la celda o `FLAGS` del sprite) o **reprograma** la
+> paleta, no el patrón.
 
 ### Paletas programables ($D813-$D815)
 
@@ -256,6 +286,24 @@ vc_pal_set(VC_PAL_SPR(2, 3), 0x0F0);    /* escribe el color y auto-avanza */
 Macros de color: `VC_RGB444(r,g,b)` (componentes 0-15), `VC_RGB888(0xRRGGBB)`,
 `VC_PAL_BG(pal,color)`, `VC_PAL_SPR(pal,color)`.
 
+#### Color de fondo global (`BG_COLOR`)
+
+`BG_COLOR` es lo que se ve en el **margen** y en el **fondo vacío** (tile con color 0
+sin sprite detrás). No tiene registro propio: es la **entrada 15** del banco de fondo
+(`VC_PAL_BGCOLOR`). Usa el helper dedicado:
+
+```c
+vc_set_bgcolor(VC_RGB888(0x000000)); /* fondo negro */
+vc_set_bgcolor(VC_BG_COLOR_DEFAULT); /* volver al azul cielo por defecto ($48C) */
+```
+
+> ⚠️ La entrada 15 se comparte con el **color 3 de la paleta 3** del fondo: cambiar
+> `BG_COLOR` también cambia los tiles que usen "paleta 3, color 3".
+>
+> Los **sprites NO se ven afectados**: usan un banco de paleta aparte (entradas
+> 16-31, manual §4.2), así que su color 3 (entradas 19/23/27/31) es independiente
+> de `BG_COLOR`.
+
 > ⚠️ **Escribe las paletas en VBLANK** si cambias muchos colores a la vez: el motor
 > aplica el color al vuelo, y hacerlo a mitad de frame puede mostrar una franja con
 > el color viejo y otra con el nuevo.
@@ -265,7 +313,7 @@ Macros de color: `VC_RGB444(r,g,b)` (componentes 0-15), `VC_RGB888(0xRRGGBB)`,
 ```c
 vc_sprite_t s = { x_lo, y, tile, flags, coll };
 vc_sprite_set(spr, &s);                          /* escribir los 5 campos  */
-vc_sprite_move(spr, x, y, VC_SPPAL_MAGENTA);     /* mover con X de 9 bits  */
+vc_sprite_move(spr, x, y, VC_SPPAL_2);           /* mover con X de 9 bits  */
 vc_sprite_disable(spr);                          /* ocultar                */
 vc_sprite16_set(first, x, y, tile0, flags);      /* objeto 16x16 (4 sprites)*/
 ```
@@ -303,7 +351,7 @@ vc_oam_put(spr, VC_OAM_TILE, 8 + frame);   /* TILE = patron del frame */
 **Flip horizontal** (mirar a la izquierda) con `VC_SPR_FLIP_X` en los flags:
 
 ```c
-uint8_t f = VC_SPPAL_MAGENTA;
+uint8_t f = VC_SPPAL_2;
 if (vx < 0) f |= VC_SPR_FLIP_X;
 vc_sprite_move(spr, x, y, f);
 ```
@@ -390,21 +438,24 @@ que el color de la tinta lo elige la **paleta** de cada celda, no el tilemap. Us
 `vc_put_str_pal(col,row,s,paleta)` para fijarla:
 
 ```c
-vc_put_str_pal(2, 2, "BLANCO", VC_TINTA_BLANCA);  /* tinta blanca */
-vc_put_str_pal(2, 3, "VERDE",  VC_TINTA_VERDE);   /* tinta verde  */
+vc_put_str_pal(2, 2, "TINTA 0", VC_TINTA(VC_BGPAL_0));  /* paleta 0 */
+vc_put_str_pal(2, 3, "TINTA 3", VC_TINTA(VC_BGPAL_3));  /* paleta 3 */
 ```
 
 El header trae constantes con nombre para no memorizar la tabla:
 
 | Constante | Valor | Significado |
 |-----------|-------|-------------|
-| `VC_TINTA_BLANCA` | paleta 0 | tinta de texto blanca |
-| `VC_TINTA_VERDE` | paleta 3 | tinta de texto verde |
-| `VC_BGPAL_TEXT` | 0 | paleta: azul / cian / blanco |
-| `VC_BGPAL_TERRAIN` | 1 | paleta: marrón / gris / blanco |
-| `VC_BGPAL_VEGETATION` | 2 | paleta: verdes |
-| `VC_BGPAL_TEXTGREEN` | 3 | paleta: gris / marrón / verde |
+| `VC_TINTA(pal)` | `pal` (0-3) | paleta de la celda para texto (la fuente pinta color 3) |
+| `VC_BGPAL_0` | 0 | paleta de fondo 0 (preset: azul / cian / blanco) |
+| `VC_BGPAL_1` | 1 | paleta de fondo 1 (preset: marrón / gris / blanco) |
+| `VC_BGPAL_2` | 2 | paleta de fondo 2 (preset: verdes) |
+| `VC_BGPAL_3` | 3 | paleta de fondo 3 (preset: gris / marrón / verde) |
 | `VC_COLOR0`..`VC_COLOR3` | 0..3 | índice de color **dentro** de una paleta (para patrones de tile) |
+
+> `VC_TINTA(pal)` es un alias de `pal`: la fuente pinta **siempre** el color 3, así
+> que el color de la letra lo elige la **paleta** de la celda (p. ej.
+> `VC_TINTA(VC_BGPAL_0)`). Si reprogramas esa paleta, el texto cambia de color.
 
 > ⚠️ **Distinción clave:** el **color** de un píxel (0-3) lo determina el **patrón
 del tile**; la **paleta** (0-3) la determina el **atributo de la celda**. El color
@@ -470,6 +521,7 @@ orienta a quien busque el código de cada función:
 | Función | Archivo | Motivo |
 |---------|---------|--------|
 | `vc_wait_ready/vblank/vblank_end`, `vc_status` | `video.s` | Espera en bucle (rápido) |
+| `vc_wait_setup` | `video.s` | Polling del setup de VRAM |
 | `vc_write`, `vc_put_cell`, `vc_put_attr` | `video.s` | Puerto indirecto (caliente) |
 | `vc_load_bg_pattern`, `vc_load_spr_pattern` | `video.s` | Carga de gráficos |
 | `vc_oam_put`, `vc_sprite_move`, `vc_sprite_set`, `vc_sprite16_set` | `video.s` | Sprites (cada frame) |
@@ -481,6 +533,9 @@ orienta a quien busque el código de cada función:
 | `vc_set_cell_attr`, `vc_free_cell`, `vc_sprite_disable` | `gfx.c` | Helpers triviales |
 | `vc_pal_set_bg/spr`, `vc_pal_load_bg/spr` | `gfx.c` | Helpers de paleta por (pal,color) |
 | `vc_solid_hit`, `vc_box_from_sprite`, `vc_load_tiles`, `vc_blit_screen` | `gfx.c` | Orquestación |
+
+> `vc_clear_vram()` dispara el **setup de VRAM por hardware** (`$D816`) y espera a
+> que termine; el trabajo pesado lo hace el core, no el CPU.
 
 **Regla:** si se llama una vez por frame por objeto (sprites, colisiones, puerto
 indirecto), está en asm. Si es arranque o helpers, está en C.
@@ -591,11 +646,11 @@ símbolos de depuración, que no van al binario final.
 VC_AREA_TILEMAP  VC_AREA_ATTR  VC_AREA_PAT_BG0  VC_AREA_PAT_BG1
 VC_AREA_OAM      VC_AREA_PAT_SPR0  VC_AREA_PAT_SPR1
 
-/* Paletas de fondo / sprite */
-VC_BGPAL_TEXT  VC_BGPAL_TERRAIN  VC_BGPAL_VEGETATION  VC_BGPAL_TEXTGREEN
-VC_SPPAL_HEART VC_SPPAL_BLUE     VC_SPPAL_MAGENTA     VC_SPPAL_GREEN
-/* Tinta de texto (paletas con color 3 útil) */
-VC_TINTA_BLANCA  VC_TINTA_VERDE
+/* Paletas de fondo / sprite (índices neutros; sus colores son presets) */
+VC_BGPAL_0  VC_BGPAL_1  VC_BGPAL_2  VC_BGPAL_3
+VC_SPPAL_0  VC_SPPAL_1  VC_SPPAL_2  VC_SPPAL_3
+/* Paleta de texto: la fuente pinta color 3 -> VC_TINTA(paleta) */
+VC_TINTA(VC_BGPAL_0)  VC_TINTA(VC_BGPAL_3)
 /* Índice de color dentro de una paleta (para patrones de tile) */
 VC_COLOR0  VC_COLOR1  VC_COLOR2  VC_COLOR3
 
@@ -603,8 +658,14 @@ VC_COLOR0  VC_COLOR1  VC_COLOR2  VC_COLOR3
 VC_RGB444(r,g,b)              /* componentes 0-15 -> RGB444 */
 VC_RGB888(0xRRGGBB)           /* RGB888 -> RGB444 */
 VC_PAL_BG(pal,color)  VC_PAL_SPR(pal,color)   /* entrada de paleta */
+VC_PAL_BGCOLOR (15)   VC_BG_COLOR_DEFAULT (0x48C)
 vc_pal_ptr(entrada)  vc_pal_set(entrada,rgb444)  vc_pal_load(entrada,arr,count)
 vc_pal_set_bg/spr(pal,color,rgb444)  vc_pal_load_bg/spr(pal,arr4)
+vc_set_bgcolor(rgb444)          /* color de fondo global (BG_COLOR) */
+
+/* Setup de VRAM por hardware ($D816/$D817) */
+vc_wait_setup()
+VC_SETUP_BUSY (0x01)
 
 /* Flags de sprite */
 VC_SPR_FLIP_Y  VC_SPR_FLIP_X  VC_SPR_PRIO  VC_SPR_SCALE2X  VC_SPR_XBIT8
@@ -636,9 +697,10 @@ VC_WRITE(area, addr, data)
 
 ## Ejemplo completo
 
-La demo `src/main.c` es un ejemplo funcional que usa todo: carga de tiles,
-mundo con scroll, sprite animado, objeto 16×16, HUD con split de raster, texto y
-colisiones. Úsala como plantilla.
+La demo `examples/demo/main.c` es un ejemplo funcional que usa todo: carga de
+tiles, mundo con scroll, sprite animado, objeto 16×16, HUD con split de raster,
+texto y colisiones. Úsala como plantilla. El resto de ejemplos
+(`collision/`, `animation/`, `palette/`) ilustran cada área por separado.
 
 ---
 
@@ -653,5 +715,8 @@ colisiones. Úsala como plantilla.
 - La VRAM es **solo de escritura**: mantén tu propia copia del texto/mapa en RAM.
 - Colisión sprite↔sprite: **software** (`vc_box_overlap`/`vc_box_contains`).
 - Colisión sprite↔tile: flag **global** (`vc_solid_hit`); el software decide quién.
+- **`vc_clear_vram()` borra los patrones** (y recarga la fuente `$20-$7F`). Si el
+  juego dibuja tiles propios en ese rango, los pierde; usa `$00-$1F` y `$80-$FF`
+  para gráficos si necesitas texto.
 - La fila 0 del tilemap se ve desplazada por el pipeline: resérvala para HUD y
   dibuja desde la fila 1.

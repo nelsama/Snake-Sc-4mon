@@ -53,6 +53,8 @@
 #define VID_PAL_PTR     (*(volatile uint8_t *)0xD813) /* W: entrada de paleta */
 #define VID_PAL_LO      (*(volatile uint8_t *)0xD814) /* W: color bits 7:0   */
 #define VID_PAL_HI      (*(volatile uint8_t *)0xD815) /* W: bits 11:8 + dispara+inc */
+#define VID_SETUP       (*(volatile uint8_t *)0xD816) /* W: dispara setup de VRAM */
+#define VID_SETUP_ST    (*(volatile uint8_t *)0xD817) /* R: estado del setup      */
 
 /* ===========================================================================
  * 2. BITS DE STATUS ($D803)
@@ -62,6 +64,9 @@
 #define VC_STATUS_OVERFLOW    0x40  /* 1 = >8 sprites en una línea            */
 #define VC_STATUS_SOLID_HIT   0x20  /* 1 = algún sprite tocó tile sólido      */
 #define VC_STATUS_VIDEO_READY 0x10  /* 1 = init de VRAM terminada             */
+
+/* Bits de $D817 (SETUP_ST) */
+#define VC_SETUP_BUSY         0x01  /* 1 = setup de VRAM en curso             */
 
 /* ===========================================================================
  * 3. ÁREAS DEL PUERTO INDIRECTO ($D801)
@@ -240,7 +245,12 @@ void     vc_set_bgcolor(uint16_t rgb444);
 void     vc_wait_ready(void);       /* espera VIDEO_READY al arrancar        */
 void     vc_wait_vblank(void);      /* espera ENTRAR en VBLANK               */
 void     vc_wait_vblank_end(void);  /* espera SALIR de VBLANK                */
-uint8_t  vc_status(void);           /* lee STATUS                            */
+uint8_t  vc_status(void);           /* lee STATUS ($D803)                    */
+
+/* --- Setup de VRAM por hardware ($D816/$D817) ---
+ * Dispara el setup del core: limpia tilemap/atributos/patrones y re-expande la
+ * fuente (~120-275 us). vc_clear_vram() lo usa internamente. */
+void     vc_wait_setup(void);       /* espera a que el setup termine         */
 
 /* --- Escritura indirecta rápida (no auto-incrementa) --- */
 void     vc_write(uint8_t area, uint16_t addr, uint8_t data);
