@@ -180,9 +180,11 @@ static uint8_t  quit_flag;
 static uint8_t  dead;              /* ya choco (pausa de muerte en curso)     */
 
 /* Mejores puntuaciones de la sesion (top 5), en orden descendente.
+ * Se guarda tambien el LARGO (segmentos) con que se logro cada record.
  * Viven en RAM: se pierden al salir al monitor (jmp $8000 reinicia la RAM). */
 #define HS_COUNT  5
 static uint16_t high_scores[HS_COUNT];
+static uint16_t high_lengths[HS_COUNT];
 static uint8_t  hs_last_idx;       /* indice del ultimo score insertado (o 0xFF) */
 
 static uint16_t rng_state;
@@ -574,14 +576,17 @@ static void hud_update_score(void) {
 /* Inicializa la tabla de records a 0 (vacia). */
 static void hs_reset(void) {
     uint8_t i;
-    for (i = 0; i < HS_COUNT; i++) high_scores[i] = 0;
+    for (i = 0; i < HS_COUNT; i++) {
+        high_scores[i]  = 0;
+        high_lengths[i] = 0;
+    }
     hs_last_idx = 0xFF;
 }
 
-/* Inserta 'v' en la tabla (orden descendente) y desplaza el resto. Guarda en
- * hs_last_idx la posicion final (o 0xFF si no entro en el top 5). No inserta
- * puntuaciones de 0. */
-static void hs_insert(uint16_t v) {
+/* Inserta (v = puntos, len = largo alcanzado) en la tabla (orden descendente por
+ * puntos) y desplaza el resto. Guarda en hs_last_idx la posicion final (o 0xFF
+ * si no entro en el top 5). No inserta puntuaciones de 0. */
+static void hs_insert(uint16_t v, uint16_t len) {
     uint8_t i, pos;
 
     hs_last_idx = 0xFF;
@@ -594,28 +599,36 @@ static void hs_insert(uint16_t v) {
 
     /* Desplaza hacia abajo desde el final hasta 'pos'. */
     for (i = (uint8_t)(HS_COUNT - 1); i > pos; i--) {
-        high_scores[i] = high_scores[i - 1];
+        high_scores[i]  = high_scores[i - 1];
+        high_lengths[i] = high_lengths[i - 1];
     }
-    high_scores[pos] = v;
+    high_scores[pos]  = v;
+    high_lengths[pos] = len;
     hs_last_idx = pos;
 }
 
-/* Dibuja la tabla de records en la columna 'col', empezando en la fila 'row'. */
+/* Dibuja la tabla de records en dos columnas (PTS y LARGO), empezando en 'row':
+ *   fila row    : "MEJORES:"
+ *   fila row+1  : cabeceras "PTS" / "LARGO"
+ *   filas row+2..: las 5 entradas */
 static void hs_draw(uint8_t col, uint8_t row) {
     uint8_t i;
 
     put_str_pal(col, row, "MEJORES:", PAL_TITLE);
+    put_str_pal((uint8_t)(col + 3), (uint8_t)(row + 1), "PTS", PAL_TITLE);
+    put_str_pal((uint8_t)(col + 8), (uint8_t)(row + 1), "LARGO", PAL_TITLE);
     for (i = 0; i < HS_COUNT; i++) {
-        uint8_t r = (uint8_t)(row + 1 + i);
+        uint8_t r = (uint8_t)(row + 2 + i);
         uint8_t pal = (i == hs_last_idx) ? PAL_TITLE : PAL_TEXT;
 
-        /* "1. 0100" */
+        /* "1. 0100   020"  ->  puntos | largo */
         char buf[3];
         buf[0] = (char)('1' + i);
         buf[1] = '.';
         buf[2] = 0;
         put_str_pal(col, r, buf, pal);
         put_u16_pal((uint8_t)(col + 3), r, high_scores[i], 4, pal);
+        put_u16_pal((uint8_t)(col + 8), r, high_lengths[i], 3, pal);
     }
 }
 
@@ -780,6 +793,10 @@ static uint8_t play_game(void) {
         }
     }
 
+    /* Asegura que la cabeza quede oculta al salir de la partida (el llamante
+     * puede dibujar un panel encima y no queremos el sprite flotando). */
+    head_hide();
+
     return quit_flag ? 0 : 1;   /* 1 = perdio o gano */
 }
 
@@ -817,7 +834,7 @@ static uint8_t title_screen(void) {
     }
 
     /* Titulo (letras separadas) en verde. */
-    put_str_pal(14, 8, "S N A K E", PAL_TITLE);
+    put_str_pal(15, 8, "S N A K E", PAL_TITLE);
 
     /* Logo: la cabeza de la serpiente (sprite) entre dos frutas. */
     paint(12, 11, TILE_FRUIT_FRESA, PAL_FRUIT);
@@ -826,7 +843,7 @@ static uint8_t title_screen(void) {
 
     /* Ayuda (tinta blanca, paleta 0). */
     put_str_pal(9, 15, "COME LA FRUTA Y CRECE", PAL_TEXT);
-    put_str_pal(7, 17, "JOYSTICK o WASD/flechas", PAL_TEXT);
+    put_str_pal(8, 17, "JOYSTICK o WASD/flechas", PAL_TEXT);
 
     vc_wait_vblank_end();
 
@@ -846,9 +863,9 @@ static uint8_t title_screen(void) {
             /* Redibuja SOLO en el cambio de estado (on != shown). */
             if (on != shown) {
                 if (on) {
-                    clear_str_at(11, 21, 11);       /* parpadeo: borra el texto */
+                    clear_str_at(14, 21, 11);       /* parpadeo: borra el texto */
                 } else {
-                    put_str_pal(11, 21, "PULSA BOTON", PAL_TITLE);
+                    put_str_pal(14, 21, "PULSA BOTON", PAL_TITLE);
                 }
                 shown = on;
             }
@@ -869,6 +886,51 @@ static uint8_t title_screen(void) {
 }
 
 /* ===========================================================================
+ * DESPEDIDA (pantalla al salir con 'q')
+ * ===========================================================================
+ * Limpia la pantalla y dibuja un gusanito (cuerpo + cabeza) junto a un "BYE!",
+ * deja un instante para verlo y vuelve al monitor. */
+static void bye_screen(void) {
+    uint8_t x, y, i;
+    /* Fila/columna del homenaje. El gusano mira a la DERECHA, con el morro
+     * hacia el texto. El conjunto (gusano + "BYE!") queda centrado. */
+    const uint8_t row = 14;
+    const uint8_t x0  = 14;   /* columna del cuerpo (izquierda) */
+
+    vc_wait_vblank();
+
+    /* Fondo limpio. */
+    for (y = 0; y < VC_SCREEN_ROWS; y++)
+        for (x = 0; x < VC_SCREEN_COLS; x++)
+            paint(x, y, TILE_BLANK, PAL_TEXT);
+
+    /* Cuerpo del gusano: una fila de tiles; la celda de la cabeza queda VACIA
+     * (la ocupa el sprite, que se refresca en el bucle de abajo). */
+    for (i = 0; i < 4; i++) {
+        paint((uint8_t)(x0 + i), row, TILE_BODY, PAL_BODY);
+    }
+
+    /* Texto a la derecha del morro. */
+    put_str_pal((uint8_t)(x0 + 7), row, "BYE!", PAL_TITLE);
+
+    /* Globito de despedida (centrado). */
+    put_str_pal(11, 10, "GRACIAS POR JUGAR", PAL_TEXT);
+
+    vc_wait_vblank_end();
+
+    /* Deja la pantalla visible un momento (~80 frames, ~1.3 s). La OAM se
+     * reescribe cada frame (dentro del VBLANK) para que el sprite no se pierda. */
+    for (i = 0; i < 80; i++) {
+        vc_wait_vblank();
+        head_place((uint8_t)(x0 + 4), row, DIR_RIGHT);
+        vc_wait_vblank_end();
+    }
+
+    /* Apaga el sprite antes de volver al monitor. */
+    head_hide();
+}
+
+/* ===========================================================================
  * MAIN
  * =========================================================================== */
 int main(void) {
@@ -884,6 +946,7 @@ int main(void) {
 
     /* Pantalla de bienvenida: espera al boton antes de empezar. */
     if (!title_screen()) {
+        bye_screen();
         snd_silence();
         vc_wait_vblank();
         vc_clear_oam();
@@ -902,8 +965,8 @@ int main(void) {
             snd_silence();
             vc_wait_vblank();
 
-            /* Inserta la puntuacion en el top 5 (guarda hs_last_idx). */
-            hs_insert(score);
+            /* Inserta la puntuacion y el largo alcanzado en el top 5. */
+            hs_insert(score, snake_len);
 
             /* Limpia toda la pantalla para el panel de fin de partida. */
             for (y = 0; y < VC_SCREEN_ROWS; y++) {
@@ -918,7 +981,7 @@ int main(void) {
             put_str_at(13, 6, "PUNTOS:");
             put_u16_at(21, 6, score, 4);
 
-            hs_draw(13, 8);   /* "MEJORES:" + 5 filas (filas 8..13) */
+            hs_draw(13, 8);   /* MEJORES: + cabeceras + 5 filas (8..14) */
 
             put_str_at(9, 16, "BOTON/R = reiniciar");
             put_str_at(9, 17, "Q = salir");
@@ -961,7 +1024,8 @@ int main(void) {
         }
     } while (again);
 
-    /* Salida limpia al monitor. */
+    /* Salida limpia al monitor: primero la pantalla de despedida. */
+    bye_screen();
     snd_silence();
     vc_wait_vblank();
     vc_clear_oam();
