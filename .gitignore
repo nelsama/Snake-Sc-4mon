@@ -1,0 +1,3 @@
+# Artefactos de compilacion (generados por el makefile)
+build/
+output/
