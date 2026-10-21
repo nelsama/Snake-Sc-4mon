@@ -42,12 +42,13 @@ _init:
     ; Llamar a main
     jsr _main
 
-    ; Si main retorna, saltar al monitor en ROM.
-    ; NOTA: se usa jmp (reset del monitor) y NO un RTS, porque el monitor no
-    ; preserva su estado (ZP y RAM) antes de ejecutar el programa: al volver
-    ; con RTS reanudaria con su estado corrupto. jmp $8000 es el mecanismo
-    ; previsto por el monitor (igual que en sus ejemplos oficiales).
-    jmp $8000
+    ; Respaldo: si main retornara (no deberia), reiniciar CON autoboot para
+    ; volver al launcher. Se deja el flag de usuario ($C004 bit 0 = 0) y se
+    ; salta por el vector RESET. El retorno normal lo hace exit_with_autoboot()
+    ; desde C, que es el camino que se usa realmente.
+    lda #$00
+    sta $C004
+    jmp ($FFFC)
 
 ; ============================================
 ; zerobss - Inicializa BSS a ceros

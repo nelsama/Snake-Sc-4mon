@@ -608,15 +608,23 @@ static void hs_insert(uint16_t v, uint16_t len) {
 }
 
 /* Dibuja la tabla de records en dos columnas (PTS y LARGO), empezando en 'row':
- *   fila row    : "MEJORES:"
- *   fila row+1  : cabeceras "PTS" / "LARGO"
- *   filas row+2..: las 5 entradas */
+ *   fila row     : "MEJORES:"
+ *   fila row+1   : cabeceras "PTS" / "LARGO"
+ *   filas row+2..: las 5 entradas
+ *
+ * Columnas (relativas a 'col'):
+ *   col+0 : indice "1."      col+3 : puntos (4 digitos)
+ *   col+9 : largo (3 digitos) */
+#define HS_COL_PTS   3
+#define HS_COL_LEN   9
+
 static void hs_draw(uint8_t col, uint8_t row) {
     uint8_t i;
 
+    /* Ancho total de la tabla: de col+0 a col+11 (12 columnas). */
     put_str_pal(col, row, "MEJORES:", PAL_TITLE);
-    put_str_pal((uint8_t)(col + 3), (uint8_t)(row + 1), "PTS", PAL_TITLE);
-    put_str_pal((uint8_t)(col + 8), (uint8_t)(row + 1), "LARGO", PAL_TITLE);
+    put_str_pal((uint8_t)(col + HS_COL_PTS), (uint8_t)(row + 1), "PTS",   PAL_TITLE);
+    put_str_pal((uint8_t)(col + HS_COL_LEN), (uint8_t)(row + 1), "LARGO", PAL_TITLE);
     for (i = 0; i < HS_COUNT; i++) {
         uint8_t r = (uint8_t)(row + 2 + i);
         uint8_t pal = (i == hs_last_idx) ? PAL_TITLE : PAL_TEXT;
@@ -627,8 +635,8 @@ static void hs_draw(uint8_t col, uint8_t row) {
         buf[1] = '.';
         buf[2] = 0;
         put_str_pal(col, r, buf, pal);
-        put_u16_pal((uint8_t)(col + 3), r, high_scores[i], 4, pal);
-        put_u16_pal((uint8_t)(col + 8), r, high_lengths[i], 3, pal);
+        put_u16_pal((uint8_t)(col + HS_COL_PTS), r, high_scores[i], 4, pal);
+        put_u16_pal((uint8_t)(col + HS_COL_LEN), r, high_lengths[i], 3, pal);
     }
 }
 
@@ -919,15 +927,60 @@ static void bye_screen(void) {
     vc_wait_vblank_end();
 
     /* Deja la pantalla visible un momento (~80 frames, ~1.3 s). La OAM se
-     * reescribe cada frame (dentro del VBLANK) para que el sprite no se pierda. */
+     * reescribe cada frame (dentro del VBLANK) para que el sprite no se pierda.
+     * Se descarta lo que llegue por UART mientras tanto: no debe quedar nada
+     * pendiente para el programa que arranque tras el reset. */
     for (i = 0; i < 80; i++) {
         vc_wait_vblank();
         head_place((uint8_t)(x0 + 4), row, DIR_RIGHT);
         vc_wait_vblank_end();
+
+        while (rom_uart_rx_ready()) (void)rom_uart_getc();
     }
 
     /* Apaga el sprite antes de volver al monitor. */
     head_hide();
+}
+
+/* ===========================================================================
+ * SALIDA
+ * ===========================================================================
+ * Al terminar, se vuelve al monitor PIDIENDO AUTOBOOT: se deja el flag de
+ * usuario del FPGA ($C004 bit 0 = 0) y se reinicia por el vector RESET, para
+ * que el monitor relea BOOT.INI y lance el programa de arranque (launcher).
+ *
+ *   $C004 bit 0 = 1 -> monitor sin autoboot (prompt)
+ *   $C004 bit 0 = 0 -> monitor CON autoboot (lee BOOT.INI)
+ *
+ * Es un registro de hardware fuera del dominio de reset: sobrevive al reinicio.
+ * IMPORTANTE: usar `jmp ($FFFC)` (vector RESET) y no `jmp $8000`, porque solo el
+ * primero hace que el monitor evalue el flag recien escrito.
+ * =========================================================================== */
+#define SYSFLAGS (*((volatile uint8_t *)0xC004))
+
+/* Vuelve al monitor con autoboot (lanza BOOT.INI). No retorna. */
+static void exit_with_autoboot(void) {
+    uint8_t guard;
+
+    snd_silence();
+    vc_wait_vblank();
+    vc_clear_oam();
+    vc_set_scroll_x(0);
+    vc_set_scroll_y(0);
+
+    /* Vacia el buffer de la UART. Si quedan caracteres pendientes (p. ej. las
+     * teclas pulsadas durante la despedida), el monitor/lanzador que arranca
+     * tras el reset los consumiria y se saldria solo. Se descartan aqui. */
+    guard = 0;
+    while (rom_uart_rx_ready() && guard < 64) {
+        (void)rom_uart_getc();
+        guard++;
+    }
+
+    rom_uart_puts("\r\nReiniciando con autoboot (BOOT.INI)...\r\n");
+
+    SYSFLAGS = 0x00;        /* permitir autoboot en el proximo reset */
+    __asm__("jmp ($FFFC)"); /* reset por el vector -> monitor -> BOOT.INI */
 }
 
 /* ===========================================================================
@@ -947,13 +1000,7 @@ int main(void) {
     /* Pantalla de bienvenida: espera al boton antes de empezar. */
     if (!title_screen()) {
         bye_screen();
-        snd_silence();
-        vc_wait_vblank();
-        vc_clear_oam();
-        vc_set_scroll_x(0);
-        vc_set_scroll_y(0);
-        rom_uart_puts("\r\nSaliendo al monitor...\r\n");
-        return 0;
+        exit_with_autoboot();   /* no retorna */
     }
 
     do {
@@ -975,16 +1022,19 @@ int main(void) {
                 }
             }
 
-            /* Panel de GAME OVER (todo mas arriba para dejar sitio al top 5). */
-            put_str_pal(16, 3, "GAME OVER", PAL_TITLE);
+            /* Panel de GAME OVER (centrado; deja sitio al top 5 debajo). */
+            put_str_pal(15, 3, "GAME OVER", PAL_TITLE);
 
-            put_str_at(13, 6, "PUNTOS:");
-            put_u16_at(21, 6, score, 4);
+            /* PUNTOS centrado: "PUNTOS:" (7) + espacio + 4 digitos = 12 cols. */
+            put_str_at(14, 6, "PUNTOS:");
+            put_u16_at(22, 6, score, 4);
 
-            hs_draw(13, 8);   /* MEJORES: + cabeceras + 5 filas (8..14) */
+            /* Tabla top 5: 12 columnas -> centrada en col 14. */
+            hs_draw(14, 9);
 
-            put_str_at(9, 16, "BOTON/R = reiniciar");
-            put_str_at(9, 17, "Q = salir");
+            /* Instrucciones (centradas, con una fila de aire). */
+            put_str_at(10, 18, "BOTON/R = reiniciar");
+            put_str_at(15, 19, "Q = salir");
 
             clear_str_at(0, 27, 40);
             vc_wait_vblank_end();
@@ -1024,13 +1074,9 @@ int main(void) {
         }
     } while (again);
 
-    /* Salida limpia al monitor: primero la pantalla de despedida. */
+    /* Salida: pantalla de despedida y vuelta al monitor CON autoboot. */
     bye_screen();
-    snd_silence();
-    vc_wait_vblank();
-    vc_clear_oam();
-    vc_set_scroll_x(0);
-    vc_set_scroll_y(0);
-    rom_uart_puts("\r\nSaliendo al monitor...\r\n");
+    exit_with_autoboot();   /* no retorna */
+
     return 0;
 }

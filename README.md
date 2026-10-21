@@ -7,6 +7,12 @@ El clásico juego de la serpiente para el computador 6502 con el **Core de Víde
 > ha convertido en un proyecto **autónomo** con su propia lógica, configuración y
 > copia de la biblioteca (`lib/vc.lib`, `config/programa.cfg`, `include/video.h`).
 
+> 📌 **¿Vas a empezar otro juego?** Lee antes
+> [`doc/TIPS-Y-TRAMPA.md`](doc/TIPS-Y-TRAMPA.md): guía **general** de desarrollo en
+> el Core de Vídeo (tiles, sprites, flips, paletas, texto, SID, depuración) con
+> síntoma → causa → solución. Los ejemplos concretos son ilustrativos, no de este
+> juego.
+
 ---
 
 ## Cómo jugar
@@ -47,6 +53,8 @@ puntos. Pierdes si chocas contra tu propio cuerpo o contra las paredes.
   (`jmp $8000` reinicia la RAM) la tabla se pierde.
 - **Fin de partida:** se muestra `GAME OVER` y espera el **botón** (o `R`) para
   reintentar, o `Q` para salir.
+- **Al salir:** se muestra una despedida y el monitor **reinicia con autoboot**
+  (`BOOT.INI`), volviendo al launcher/menú (ver abajo).
 
 ---
 
@@ -165,6 +173,27 @@ retiró).
 > Detalle completo (diagnóstico, reproducción y el fix aplicado):
 > `doc/CORE-BUG-sprite-right-edge.md`.
 
+### Salida: reinicio con autoboot
+
+Al terminar (o salir con `q`) el juego vuelve al monitor **pidiendo autoboot**, de
+modo que el monitor relee `BOOT.INI` y lanza el programa de arranque (el launcher):
+
+```c
+#define SYSFLAGS (*((volatile uint8_t *)0xC004))
+
+SYSFLAGS = 0x00;          /* bit 0 = 0 -> permitir autoboot */
+__asm__("jmp ($FFFC)");   /* reset por el vector -> monitor -> BOOT.INI */
+```
+
+El flag `$C004` bit 0 es un registro de hardware **fuera del dominio de reset**, así
+que sobrevive al reinicio (la RAM no serviría: el stack de cc65 la pisa).
+
+> ⚠️ Hay que usar **`jmp ($FFFC)`** (vector RESET) y no `jmp $8000`: solo el primero
+> hace que el monitor evalúe el flag recién escrito.
+>
+> - `SYSFLAGS = 0x01` → monitor con prompt (sin autoboot).
+> - `SYSFLAGS = 0x00` → monitor **con** autoboot (`BOOT.INI`).
+
 ---
 
 ## Compilar
@@ -209,7 +238,8 @@ snake/
 ├── config/
 │   └── programa.cfg    config del linker (copia de la lib)
 ├── doc/
-│   └── VIDEO-LIB.md    manual de la biblioteca
+│   ├── VIDEO-LIB.md    manual de la biblioteca
+│   └── TIPS-Y-TRAMPA.md  lecciones y trampas (para empezar un juego nuevo)
 ├── build/              objetos
 └── output/
     ├── game.bin        binario final
