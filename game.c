@@ -190,16 +190,22 @@ static const uint8_t tile_fruit_apple_p1[8] = { 0x18,0x18,0x00,0x00,0x00,0x00,0x
 #define PAL_CANVAS   VC_BGPAL_2   /* lienzo: color 1 = azul, color 2 = amarillo */
 #define PAL_CANVAS_W VC_BGPAL_1   /* lienzo: color 3 = blanco                   */
 
+/* Paleta del lienzo para el color del CUERPO. Es una paleta de FONDO (una
+ * celda no puede usar una de sprite), pero body_apply() le escribe el mismo
+ * color que a la cabeza, asi que se ven igual. */
+#define PAL_CANVAS_BODY  PAL_CANVAS
+
 /* NOTA: la paleta 3 no se usa para texto: su color 3 es BG_COLOR (entrada 15),
  * asi que reescribirla cambiaria el color de fondo. Los subtitulos van en blanco. */
 
 /* ---------------------------------------------------------------------------
  * COLOR DEL CUERPO (elegible)
  * ---------------------------------------------------------------------------
- * El cuerpo lo usan DOS cosas: el tile TILE_BODY (color 1 de PAL_BODY) y el
- * sprite de la cabeza (color 1 de PAL_SNAKE_S). Con una sola escritura en cada
- * una queda todo coherente.
- * El indice va en FACE.DAT (byte FACE_PAL) y se aplica con body_apply(). */
+ * El cuerpo lo pintan DOS cosas: el tile TILE_BODY del tablero y el sprite de
+ * la cabeza. Las celdas de FONDO y los SPRITES usan espacios de paleta
+ * distintos, asi que no pueden compartir una celda: body_apply() escribe el
+ * MISMO color en las dos paletas y asi el color es uno solo de cara al usuario.
+ * El indice va en FACE.DAT (byte FACE_PAL). */
 #define BODY_COUNT   4
 #define BODY_DEF     0      /* 0 = azul: el de siempre */
 
@@ -387,9 +393,13 @@ static void clear_screen(void) {
 /* Pone el color del CUERPO en las dos paletas que lo usan. Solo 4 colores:
  * el indice va en FACE_PAL y se recorre con una suma sin signo, sin tablas ni
  * modulo (la RAM y el CODE van justos y el 6502 no tiene division). */
-/* Pone el color del CUERPO en las dos paletas que lo usan. Solo 4 colores, con
- * un switch: no hay tabla ni division (la RAM y el CODE van justos y el 6502 no
- * tiene instructiva de modulo). */
+/* Pone el color del CUERPO en TODAS las paletas que lo usan, para que sea un
+ * solo color en todo el juego y el editor:
+ *   PAL_BODY         - tile del cuerpo en el tablero (color 1)
+ *   PAL_SNAKE_S      - sprite de la cabeza (color 1)
+ *   PAL_CANVAS_BODY  - lienzo del editor (color 1, paleta de fondo)
+ * Solo 4 colores con un switch: no hay tabla ni division (la RAM y el CODE van
+ * justos y el 6502 no tiene instruccion de modulo). */
 static void body_apply(void) {
     uint8_t k = face_buf[FACE_PAL];
     uint16_t c;
@@ -401,8 +411,9 @@ static void body_apply(void) {
         case 3:  c = VC_RGB444(0xF, 0xF, 0x0); break;  /* amarillo */
         default: c = VC_RGB444(0x0, 0x0, 0xA); break;  /* azul     */
     }
-    vc_pal_set_bg(PAL_BODY,    1, c);
-    vc_pal_set_spr(PAL_SNAKE_S, 1, c);
+    vc_pal_set_bg(PAL_BODY,        1, c);
+    vc_pal_set_spr(PAL_SNAKE_S,    1, c);
+    vc_pal_set_bg(PAL_CANVAS_BODY, 1, c);
 }
 
 /* Carga en el banco de sprites los DOS patrones que usa la cabeza:
@@ -1122,7 +1133,9 @@ static void canvas_cell(uint8_t r, uint8_t c) {
         /* Transparente: hueco real, se ve el negro del fondo como en el juego. */
         paint(x, y, TILE_BLANK, PAL_TEXT);
     } else if (v == FC_AZUL) {
-        paint(x, y, TILE_SOL0, PAL_CANVAS);     /* color 1 = azul     */
+        /* Color del CUERPO: misma paleta que la cabeza, asi el lienzo muestra
+         * exactamente lo que tendra el gusano. */
+        paint(x, y, TILE_SOL0, PAL_CANVAS_BODY);
     } else if (v == FC_AMARILLO) {
         paint(x, y, TILE_SOL1, PAL_CANVAS);     /* color 2 = amarillo */
     } else {
@@ -1143,8 +1156,9 @@ static void canvas_draw_all(void) {
  * --------------------------------------------------------------------------- */
 
 /* Dibuja el recuadro del color del cuerpo, a la derecha del lienzo: un bloque
- * de 2x2 celdas con el color elegido. Usa TILE_SOL0, que pinta en el COLOR 1:
- * el mismo indice en que body_apply() guarda el color del cuerpo. */
+ * de 2x2 celdas con el color elegido. Usa la MISMA paleta que la cabeza
+ * (PAL_SNAKE_S), asi el recuadro muestra exactamente el color del cuerpo del
+ * gusano: las dos cosas van en el color 1 de esa paleta. */
 #define BODY_W  2
 #define BODY_H  2
 
@@ -1153,7 +1167,7 @@ static void body_sel_draw(void) {
     for (i = 0; i < BODY_H; i++)
         for (j = 0; j < BODY_W; j++)
             paint((uint8_t)(BODY_COL + j), (uint8_t)(BODY_ROW + i),
-                  TILE_SOL0, PAL_BODY);      /* color 1 = cuerpo */
+                  TILE_SOL0, PAL_CANVAS_BODY);
     put_str_pal((uint8_t)(BODY_COL - 1), (uint8_t)(BODY_ROW - 1), "CUERPO", PAL_TEXT);
 }
 
