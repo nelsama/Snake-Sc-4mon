@@ -1208,7 +1208,7 @@ static void editor_hud(void) {
     put_str_pal(1, 25, "CUERPO:", PAL_TEXT);
 }
 
-/* Repinta el numero de color del HUD. */
+/* Repinta el numero de color del HUD. Llamar SOLO dentro del VBLANK. */
 static void editor_num(void) {
     char b[2];
     b[0] = (char)('0' + ed_color);
@@ -1216,21 +1216,17 @@ static void editor_num(void) {
     put_str_pal(7, 20, b, PAL_TITLE);
 }
 
-/* Pinta la celda del cursor con el color actual y pasa al siguiente. */
+/* Pinta la celda del cursor con el color actual y pasa al siguiente.
+ * OJO: NO dibuja en VRAM (se llama fuera del VBLANK); solo cambia los datos y
+ * deja que el bucle repinte el lienzo y el HUD dentro del VBLANK. */
 static void editor_paint(void) {
-    char b[2];
-
     FACE_AT(ed_cy, ed_cx) = ed_color;
-    canvas_cell(ed_cy, ed_cx);
 
     /* Ciclo: 0 -> 1 -> 2 -> 4 -> 0 (el 3 no existe). */
     if      (ed_color == FC_TRANS)    ed_color = FC_AZUL;
     else if (ed_color == FC_AZUL)     ed_color = FC_AMARILLO;
     else if (ed_color == FC_AMARILLO) ed_color = FC_BLANCO;
     else                              ed_color = FC_TRANS;
-    b[0] = (char)('0' + ed_color);
-    b[1] = 0;
-    put_str_pal(7, 20, b, PAL_TITLE);
 }
 
 /* Estado de repeticion del joystick en el editor (autorepeat).
@@ -1290,22 +1286,7 @@ static uint8_t face_editor(void) {
         uint8_t j, edge;
         char c;
 
-        vc_wait_vblank();
-        if (dirty) {
-            canvas_draw_all();
-            body_sel_draw();
-            cursor_place();
-            dirty = 0;
-        }
-        /* Parpadeo del cursor: cambia de color cada ED_FLASH_DIV frames. */
-        if (++ed_flash == ED_FLASH_DIV) {
-            ed_flash = 0;
-            ed_flash_on = (uint8_t)!ed_flash_on;
-        }
-        cursor_flash(ed_flash_on);
-        vc_wait_vblank_end();
-
-        /* --- Joystick, con autorepeat --- */
+        /* --- 1. Entrada (fuera del VBLANK: no toca hardware) --- */
         j    = joy_read();
         edge = (uint8_t)(j & (uint8_t)~ed_joy_prev);   /* recien pulsado */
         ed_joy_prev = j;
@@ -1326,8 +1307,6 @@ static uint8_t face_editor(void) {
             else if (j & JOY_A_RIGHT) d = 1;
             else if (j & JOY_A_UP)    d = 2;
             ed_move(d);
-            if (ed_body) body_apply();   /* paleta: dentro del VBLANK */
-            cursor_place();
             dirty = 1;
         }
 
@@ -1336,34 +1315,39 @@ static uint8_t face_editor(void) {
         if (edge & JOY_A_FIRE) {
             if (ed_body) {
                 face_buf[FACE_PAL] = (uint8_t)((face_buf[FACE_PAL] + 1) & 3);
-                body_apply();          /* dentro del VBLANK */
-                dirty = 1;
             } else {
-                editor_paint();
-                dirty = 1;
+                editor_paint();   /* tambien marca dirty */
             }
+            dirty = 1;
         }
 
         /* --- Teclado (UART) --- */
         while (rom_uart_rx_ready()) {
             c = rom_uart_getc();
             switch (c) {
-                case 'a': case 'A': ed_move(0); dirty = 1; if (ed_body) body_apply(); cursor_place(); break;
-                case 'd': case 'D': ed_move(1); dirty = 1; if (ed_body) body_apply(); cursor_place(); break;
-                case 'w': case 'W': ed_move(2); dirty = 1; cursor_place(); break;
-                case 's': case 'x': ed_move(3); dirty = 1; cursor_place(); break;
-                case ' ':          if (ed_body) {
-                                       face_buf[FACE_PAL] = (uint8_t)((face_buf[FACE_PAL] + 1) & 3);
-                                       body_apply(); dirty = 1;
-                                   } else editor_paint();
-                                   break;
-                case '0': ed_color = FC_TRANS;    editor_num(); break;
-                case '1': ed_color = FC_AZUL;     editor_num(); break;
-                case '2': ed_color = FC_AMARILLO; editor_num(); break;
-                case '4': ed_color = FC_BLANCO;   editor_num(); break;
+                case 'a': case 'A': ed_move(0); dirty = 1; break;
+                case 'd': case 'D': ed_move(1); dirty = 1; break;
+                case 'w': case 'W': ed_move(2); dirty = 1; break;
+                case 's': case 'x': ed_move(3); dirty = 1; break;
+                case ' ':
+                    if (ed_body) {
+                        face_buf[FACE_PAL] = (uint8_t)((face_buf[FACE_PAL] + 1) & 3);
+                    } else {
+                        editor_paint();
+                    }
+                    dirty = 1;
+                    break;
+                case '0': ed_color = FC_TRANS;    break;
+                case '1': ed_color = FC_AZUL;     break;
+                case '2': ed_color = FC_AMARILLO; break;
+                case '4': ed_color = FC_BLANCO;   break;
                 case 'g': case 'G':
                     if (face_save()) {
-                        face_load_patterns();                    /* aplica al instante */
+                        /* Patrones y paletas: dentro del VBLANK */
+                        vc_wait_vblank();
+                        face_load_patterns();
+                        body_apply();
+                        vc_wait_vblank_end();
                         vc_sprite_disable(SPR_EDIT_CUR);
                         return 1;
                     }
@@ -1375,6 +1359,24 @@ static uint8_t face_editor(void) {
                 default: break;
             }
         }
+
+        /* --- 2. Dibujo: TODO dentro del VBLANK --- */
+        vc_wait_vblank();
+        if (dirty) {
+            body_apply();       /* color del cuerpo (paletas) */
+            canvas_draw_all();
+            body_sel_draw();
+            editor_num();       /* numero de color del HUD */
+            dirty = 0;
+        }
+        cursor_place();         /* OAM: siempre aqui */
+        /* Parpadeo del cursor: cambia de color cada ED_FLASH_DIV frames. */
+        if (++ed_flash == ED_FLASH_DIV) {
+            ed_flash = 0;
+            ed_flash_on = (uint8_t)!ed_flash_on;
+        }
+        cursor_flash(ed_flash_on);
+        vc_wait_vblank_end();
     }
 }
 
