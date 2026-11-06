@@ -1177,6 +1177,18 @@ static void ev_reset(void) {
     ev_joy_prev = joy_read();
 }
 
+/* Descarta lo que quede en la FIFO del UART. Se usa al cambiar de pantalla
+ * para que una tecla pulsada de mas no se interprete en la pantalla siguiente
+ * (p. ej. la 'r' del GAME OVER entrando como "JUGAR" en el menu). */
+static void ev_flush(void) {
+    uint8_t guard = 0;
+    while (rom_uart_rx_ready() && guard < 64) {
+        (void)rom_uart_getc();
+        guard++;
+    }
+    ev_joy_prev = joy_read();
+}
+
 static uint8_t ev_read(void) {
     uint8_t j;
     uint8_t edge;
@@ -1227,6 +1239,7 @@ static uint8_t title_screen(void) {
     uint8_t sel = 0;
     uint8_t need_redraw = 1;
 
+    ev_flush();          /* no hereda teclas de la pantalla anterior */
     vc_wait_vblank();
 
     /* Fondo negro en toda la pantalla. */
@@ -1246,6 +1259,18 @@ static uint8_t title_screen(void) {
     vc_wait_vblank_end();
 
     ev_reset();     /* anti-rebote: ignora lo que este pulsado ahora mismo */
+
+    /* Espera de gracia: al volver del GAME OVER viene una tecla en camino
+     * ('r' o el borde del boton). Se descarta durante unos frames para que no
+     * entre al menu como "JUGAR" y reinicie la partida sin querer. */
+    {
+        uint8_t d;
+        for (d = 0; d < 30; d++) {
+            vc_wait_vblank();
+            ev_flush();
+            vc_wait_vblank_end();
+        }
+    }
 
     for (;;) {
         vc_wait_vblank();
@@ -1371,8 +1396,6 @@ static void exit_with_autoboot(void) {
  * MAIN
  * =========================================================================== */
 int main(void) {
-    uint8_t again;
-
     rom_uart_puts("\r\nSNAKE - Core de Video\r\n");
     rom_uart_puts("Joystick o WASD/flechas = mover, q = salir.\r\n");
 
@@ -1385,83 +1408,85 @@ int main(void) {
     face_load();
     face_load_patterns();
 
-    /* Bucle de pantallas: banner -> jugar / editar cara / salir. */
+    /* Bucle principal: banner -> jugar / editar cara / salir. Tras cada
+     * partida (ganada o perdida) se vuelve aqui, al banner. */
     for (;;) {
         uint8_t r = title_screen();
 
-        if (r == TITLE_JUGAR) break;             /* sale del bucle a jugar */
-        if (r == TITLE_SALIR) {
-            bye_screen();
-            exit_with_autoboot();                /* no retorna */
+        if (r == TITLE_SALIR) break;
+        if (r == TITLE_CARA) {
+            face_editor();
+            continue;
         }
-        face_editor();                           /* vuelve al banner */
+
+        if (!play_game()) {
+            /* El jugador pulso 'q' durante la partida: al monitor. */
+            break;
+        }
+
+        snd_silence();
+        vc_wait_vblank();
+
+        /* Inserta la puntuacion y el largo alcanzado en el top 5. */
+        hs_insert(score, snake_len);
+
+        /* Limpia toda la pantalla para el panel de fin de partida. */
+        clear_screen();
+
+        /* Panel de GAME OVER (centrado; deja sitio al top 5 debajo). */
+        put_str_pal(15, 3, "GAME OVER", PAL_TITLE);
+
+        /* PUNTOS centrado: "PUNTOS:" (7) + espacio + 4 digitos = 12 cols. */
+        put_str_at(14, 6, "PUNTOS:");
+        put_u16_at(22, 6, score, 4);
+
+        /* Tabla top 5: 12 columnas -> centrada en col 14. */
+        hs_draw(14, 9);
+
+        /* Instrucciones (centradas, con una fila de aire). */
+        put_str_at(13, 18, "BOTON = menu");
+        put_str_at(16, 19, "Q = salir");
+
+        clear_str_at(0, 27, 40);
+        vc_wait_vblank_end();
+        rom_uart_puts("\r\nGAME OVER - BOTON = volver al menu, Q = salir\r\n");
+
+        /* Pequeña espera de cortesia: evita volver al menu al instante si
+         * el boton se quedo pulsado al morir. */
+        {
+            uint8_t d;
+            for (d = 0; d < 20; d++) {
+                vc_wait_vblank();
+                vc_wait_vblank_end();
+            }
+        }
+
+        for (;;) {
+            char c;
+
+            /* Boton del joystick = volver al menu (no reiniciar). */
+            if (joy_read() & JOY_A_FIRE) {
+                ev_flush();
+                rom_uart_puts("\r\nVolviendo al menu.\r\n");
+                break;
+            }
+
+            if (!rom_uart_rx_ready()) {
+                vc_wait_vblank();
+                vc_wait_vblank_end();
+                continue;
+            }
+            c = rom_uart_getc();
+            if (c == 'r' || c == 'R') {
+                ev_flush();   /* que la tecla no entre en el menu */
+                rom_uart_puts("\r\nVolviendo al menu.\r\n");
+                break;
+            }
+            if (c == 'q' || c == 'Q') goto salir;
+        }
     }
 
-    do {
-        again = 0;
-
-        if (play_game()) {
-            snd_silence();
-            vc_wait_vblank();
-
-            /* Inserta la puntuacion y el largo alcanzado en el top 5. */
-            hs_insert(score, snake_len);
-
-            /* Limpia toda la pantalla para el panel de fin de partida. */
-            clear_screen();
-
-            /* Panel de GAME OVER (centrado; deja sitio al top 5 debajo). */
-            put_str_pal(15, 3, "GAME OVER", PAL_TITLE);
-
-            /* PUNTOS centrado: "PUNTOS:" (7) + espacio + 4 digitos = 12 cols. */
-            put_str_at(14, 6, "PUNTOS:");
-            put_u16_at(22, 6, score, 4);
-
-            /* Tabla top 5: 12 columnas -> centrada en col 14. */
-            hs_draw(14, 9);
-
-            /* Instrucciones (centradas, con una fila de aire). */
-            put_str_at(10, 18, "BOTON/R = reiniciar");
-            put_str_at(15, 19, "Q = salir");
-
-            clear_str_at(0, 27, 40);
-            vc_wait_vblank_end();
-            rom_uart_puts("\r\nGAME OVER - BOTON/R = jugar de nuevo, Q = salir\r\n");
-
-            /* Pequeña espera de cortesia: evita reiniciar al instante si el
-             * boton se quedo pulsado al morir. */
-            {
-                uint8_t d;
-                for (d = 0; d < 20; d++) {
-                    vc_wait_vblank();
-                    vc_wait_vblank_end();
-                }
-            }
-
-            for (;;) {
-                char c;
-
-                /* Boton del joystick = jugar de nuevo. */
-                if (joy_read() & JOY_A_FIRE) { again = 1; break; }
-
-                if (!rom_uart_rx_ready()) {
-                    vc_wait_vblank();
-                    vc_wait_vblank_end();
-                    continue;
-                }
-                c = rom_uart_getc();
-                if (c == 'r' || c == 'R') { again = 1; break; }
-                if (c == 'q' || c == 'Q') { again = 0; break; }
-            }
-
-            if (again) {
-                /* play_game() -> snake_reset() -> board_draw() limpia la pantalla;
-                 * no hace falta borrar el panel a mano. */
-                rom_uart_puts("\r\nNueva partida.\r\n");
-            }
-        }
-    } while (again);
-
+salir:
     /* Salida: pantalla de despedida y vuelta al monitor CON autoboot. */
     bye_screen();
     exit_with_autoboot();   /* no retorna */
