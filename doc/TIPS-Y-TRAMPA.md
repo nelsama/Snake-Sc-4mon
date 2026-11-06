@@ -298,6 +298,37 @@ contador de arranques.
 6. **¿Queda un elemento tras cambiar de pantalla?** casi siempre un **sprite que
    no apagaste** (`vc_sprite_disable`) o VRAM sin limpiar.
 7. **¿Aleatorio repetido?** semilla fija (§5.2).
+8. **¿La SD aparece vacía en el emulador aunque `sd_tool.py list` sí ve los
+   archivos?** Es **la ruta relativa** (§6.1), no tu programa.
+
+### 6.1 La imagen SD se abre con la ruta que le des: usa SIEMPRE absoluta
+
+Si lanzas el emulador con `--sd tarjeta.img` (relativa), el proceso arranca con
+el directorio de trabajo de quien lo lanzó, **no** el del emulador. Resultado:
+
+- Con `Start-Process` (lanzador desacoplado) el cwd es impredecible.
+- `SdCardImpl::open()` no encuentra el archivo y, como el emulador **crea la
+  imagen si no existe**, te deja un `tarjeta.img` **vacío de 16 MB** en el
+  directorio del proyecto.
+- El juego ve 0 archivos; `load` dice *No encontrado* aunque la imagen buena
+  tenga todo. El panel SD muestra `(vacia)`.
+
+**Síntoma que lo delata en el log del emulador:**
+
+```
+SD: tabla MicroFS detectada (siguiente sector libre=1)   <- MAL: imagen vacia
+SD: tabla MicroFS detectada (siguiente sector libre=9891) <- BIEN: la tuya
+```
+
+**Regla:** pasa la imagen por **ruta absoluta** y comprueba ese número al
+arrancar:
+
+```sh
+python tools/emu_agent.py start --sd D:/Proyectos/EmuladorFpga6502/tarjeta.img
+```
+
+Y añade `*.img` al `.gitignore` del juego: la imagen vacía autogenerada no debe
+acabar en el repo.
 
 ---
 
@@ -317,6 +348,9 @@ contador de arranques.
       (`$C004=0`), reiniciando con `jmp ($FFFC)` (no `jmp $8000`).
 - [ ] Recursos dentro de límites: ≤32 sprites (≤8/línea), ≤256 patrones de fondo, ≤64 de sprite.
 - [ ] Persistencia: la RAM es de sesión; usar SD si se necesita.
+- [ ] Al probar en el emulador, la imagen SD se pasa por **ruta absoluta** y se
+      verifica el "siguiente sector libre" en el log (§6.1). `*.img` en el
+      `.gitignore`.
 
 ---
 
