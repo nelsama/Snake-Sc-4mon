@@ -48,8 +48,13 @@
 #define BOARD_COLS    (SNAKE_MAX_COL - SNAKE_MIN_COL + 1)   /* 38 */
 #define BOARD_HEIGHT  (SNAKE_MAX_ROW - SNAKE_MIN_ROW + 1)   /* 22 */
 
-/* Longitud maxima de la serpiente = celdas del tablero. */
-#define MAX_SNAKE     (BOARD_COLS * BOARD_HEIGHT)
+/* Longitud maxima de la serpiente.
+ * El tablero tiene 38x22 = 836 celdas, pero reservar 836 celdas de 2 bytes
+ * (1672 B) se come casi toda la RAM libre. En la practica una partida no llega
+ * ni de lejos (haria falta comer 830 frutas). Se reserva un tope holgado y, si
+ * se alcanza, la partida termina como "victoria" igual que llenar el tablero.
+ * 400 celdas = 800 bytes (ahorra ~870 B de BSS). */
+#define MAX_SNAKE     400
 
 /* ===========================================================================
  * PATRONES
@@ -78,13 +83,22 @@ static const uint8_t tile_wall_p0[8] = { 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF
 static const uint8_t tile_body_p0[8] = { 0x3C,0x7E,0xFF,0xFF,0xFF,0xFF,0x7E,0x3C };
 static const uint8_t tile_body_p1[8] = { 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00 };
 
-/* Cabeza de la serpiente, como PATRONES DE SPRITE (4 direcciones). */
-/* Derecha (original). */
-static const uint8_t spr_head_r_p0[8] = { 0x3E,0xF1,0xE5,0xF1,0xF1,0xE5,0xF1,0x3E };
-static const uint8_t spr_head_r_p1[8] = { 0x00,0x0E,0x1E,0x0E,0x0E,0x1E,0x0E,0x00 };
-/* Arriba. */
-static const uint8_t spr_head_u_p0[8] = { 0x7E,0x81,0xA5,0x81,0xDB,0xFF,0x7E,0x7E };
-static const uint8_t spr_head_u_p1[8] = { 0x00,0x7E,0x7E,0x7E,0x24,0x00,0x00,0x00 };
+/* Cabeza de la serpiente: PLANTILLA de fabrica (mirando a la DERECHA).
+ * El dibujo editable vive en RAM (face_buf) y se convierte a planos al cargar.
+ * Indices: 0 = transparente, 1 = cuerpo, 2 = ojo, 3 = pupila. */
+static const uint8_t face_factory[64] = {
+    0,0,1,1,1,1,1,0,
+    1,1,1,1,2,2,2,1,
+    1,1,1,2,2,3,2,1,
+    1,1,1,1,2,2,2,1,
+    1,1,1,1,2,2,2,1,
+    1,1,1,2,2,3,2,1,
+    1,1,1,1,2,2,2,1,
+    0,0,1,1,1,1,1,0
+};
+
+/* Patron del cursor del editor de cara: marco blanco. */
+static const uint8_t cur_p0[8] = { 0xFF,0x81,0x81,0x81,0x81,0x81,0x81,0xFF };
 
 /* --- FRUTAS (tiles de fondo). 3 colores: 1 = rojo, 2 = verde, 3 = negro. --- */
 /* Fresa (pepitas negras, hojas verdes). */
@@ -109,6 +123,10 @@ static const uint8_t tile_fruit_apple_p1[8] = { 0x18,0x18,0x00,0x00,0x00,0x00,0x
 #define SPR_PAT_HEAD_L 1     /* patron de sprite: mira a la IZQUIERDA         */
 #define SPR_PAT_HEAD_U 2     /* patron de sprite: mira ARRIBA                 */
 #define SPR_PAT_HEAD_D 3     /* patron de sprite: mira ABAJO                  */
+
+/* Sprite del cursor del editor de cara. */
+#define SPR_EDIT_CUR   1     /* slot de OAM del cursor                        */
+#define SPR_PAT_CUR    4     /* patron de sprite del marco del cursor         */
 
 /* Paletas. La cabeza es sprite -> usa una paleta de SPRITE (VC_SPPAL_*).
  * El cuerpo es tile -> usa una paleta de FONDO (VC_BGPAL_*). */
@@ -178,6 +196,31 @@ static uint8_t  apples_eaten;
 static uint8_t  game_over;
 static uint8_t  quit_flag;
 static uint8_t  dead;              /* ya choco (pausa de muerte en curso)     */
+
+/* ===========================================================================
+ * CARA EDITABLE (datos)
+ * ===========================================================================
+ * Un unico buffer que es a la vez el contenido de FACE.DAT y la matriz de
+ * edicion: [0..1] = magic "FC", [2..65] = 64 celdas (8x8), [66..71] = paleta
+ * reservada para la fase 2 (6 bytes, sin usar todavia).
+ *
+ * Compartir el buffer evita duplicar la cara en RAM: guardar es un
+ * rom_mfs_write_via_zp() directo, sin copias.
+ * ------------------------------------------------------------------------- */
+#define FACE_MAGIC0   'F'
+#define FACE_MAGIC1   'C'
+#define FACE_DATA     2                    /* offset de la matriz 8x8 */
+#define FACE_PAL      66                   /* offset de la paleta (reservado) */
+#define FACE_LEN      72                   /* tamano total del archivo */
+
+/* Acceso a la celda (r,c) de la cara dentro del buffer. */
+#define FACE_AT(r,c)  face_buf[FACE_DATA + (r) * 8 + (c)]
+
+static uint8_t face_buf[FACE_LEN];
+
+/* Planos temporales reutilizados para cargar patrones (16 B). */
+static uint8_t face_p0[8];
+static uint8_t face_p1[8];
 
 /* Mejores puntuaciones de la sesion (top 5), en orden descendente.
  * Se guarda tambien el LARGO (segmentos) con que se logro cada record.
@@ -266,6 +309,102 @@ static void paint_flags(uint8_t col, uint8_t row, uint8_t tile, uint8_t pal,
 /* Pinta una celda del tablero con un tile y su paleta (sin flags). */
 static void paint(uint8_t col, uint8_t row, uint8_t tile, uint8_t pal) {
     paint_flags(col, row, tile, pal, 0);
+}
+
+/* Limpia toda la pantalla visible (fondo negro). Reutilizado por el banner,
+ * el editor y la despedida. */
+static void clear_screen(void) {
+    uint8_t x, y;
+    for (y = 0; y < VC_SCREEN_ROWS; y++)
+        for (x = 0; x < VC_SCREEN_COLS; x++)
+            paint(x, y, TILE_BLANK, PAL_TEXT);
+}
+
+/* Carga en el banco de sprites los DOS patrones que usa la cabeza:
+ *   SPR_PAT_HEAD_R : la cara tal cual (mira a la derecha)
+ *   SPR_PAT_HEAD_U : la misma cara girada 90 grados (mira arriba)
+ * Aprovecha los mismos planos temporales para ambos (ahorra RAM) y calcula el
+ * giro directamente desde face_buf, sin matriz temporal (ahorra stack). */
+static void face_load_patterns(void) {
+    uint8_t r, c;
+    uint8_t b0, b1;
+
+    /* --- Patron normal (derecha) --- */
+    for (r = 0; r < 8; r++) {
+        b0 = 0; b1 = 0;
+        for (c = 0; c < 8; c++) {
+            uint8_t v = FACE_AT(r, c);
+            if (v & 1) b0 |= (uint8_t)(0x80 >> c);
+            if (v & 2) b1 |= (uint8_t)(0x80 >> c);
+        }
+        face_p0[r] = b0;
+        face_p1[r] = b1;
+    }
+    vc_load_spr_pattern(SPR_PAT_HEAD_R, face_p0, face_p1);
+
+    /* --- Patron girado 90 grados (mira ARRIBA) ---
+     * rot[r][c] = orig[c][7-r].
+     * Comprobado con la cara de fabrica (ojos en las filas superiores): asi
+     * los ojos quedan ARRIBA (morro hacia arriba). La variante orig[7-c][r]
+     * es el giro contrario y dejaba la cara mirando hacia abajo. */
+    for (r = 0; r < 8; r++) {
+        b0 = 0; b1 = 0;
+        for (c = 0; c < 8; c++) {
+            uint8_t v = FACE_AT(c, (uint8_t)(7 - r));
+            if (v & 1) b0 |= (uint8_t)(0x80 >> c);
+            if (v & 2) b1 |= (uint8_t)(0x80 >> c);
+        }
+        face_p0[r] = b0;
+        face_p1[r] = b1;
+    }
+    vc_load_spr_pattern(SPR_PAT_HEAD_U, face_p0, face_p1);
+}
+
+/* Restaura la cara de fabrica en el buffer (magic + dibujo; paleta a 0). */
+static void face_default(void) {
+    uint8_t i;
+
+    face_buf[0] = FACE_MAGIC0;
+    face_buf[1] = FACE_MAGIC1;
+    for (i = 0; i < 64; i++) face_buf[FACE_DATA + i] = face_factory[i];
+    for (i = 0; i < 6; i++)  face_buf[FACE_PAL + i]  = 0;   /* reservado (fase 2) */
+}
+
+/* Carga la cara desde FACE.DAT (MicroFS de la ROM API).
+ * Devuelve 1 si se cargo una cara valida; 0 si no habia SD/fichero o estaba
+ * corrupto (en ese caso deja la de fabrica). */
+static uint8_t face_load(void) {
+    face_default();
+
+    if (rom_mfs_open("FACE.DAT") != MFS_OK) return 0;
+    if (rom_mfs_get_size() != FACE_LEN ||
+        rom_mfs_read_via_zp(face_buf, FACE_LEN) != FACE_LEN) {
+        rom_mfs_close();
+        face_default();
+        return 0;
+    }
+    rom_mfs_close();
+
+    if (face_buf[0] != FACE_MAGIC0 || face_buf[1] != FACE_MAGIC1) {
+        face_default();
+        return 0;
+    }
+    return 1;
+}
+
+/* Guarda la cara en FACE.DAT. Devuelve 1 si todo fue bien. */
+static uint8_t face_save(void) {
+    face_buf[0] = FACE_MAGIC0;
+    face_buf[1] = FACE_MAGIC1;
+
+    rom_mfs_delete("FACE.DAT");    /* create no sobrescribe */
+    if (rom_mfs_create_via_zp("FACE.DAT", FACE_LEN) != MFS_OK) return 0;
+    if (rom_mfs_write_via_zp(face_buf, FACE_LEN) != FACE_LEN) {
+        rom_mfs_close();
+        return 0;
+    }
+    rom_mfs_close();
+    return 1;
 }
 
 /* Coloca el SPRITE de la cabeza en la celda (col,row).
@@ -696,8 +835,8 @@ static void setup_video(void) {
     vc_load_bg_pattern(TILE_BODY, tile_body_p0, tile_body_p1);
     vc_load_bg_pattern(TILE_FRUIT_FRESA,   tile_fruit_straw_p0, tile_fruit_straw_p1);
     vc_load_bg_pattern(TILE_FRUIT_MANZANA, tile_fruit_apple_p0, tile_fruit_apple_p1);
-    vc_load_spr_pattern(SPR_PAT_HEAD_R, spr_head_r_p0, spr_head_r_p1);
-    vc_load_spr_pattern(SPR_PAT_HEAD_U, spr_head_u_p0, spr_head_u_p1);
+    face_load_patterns();   /* cabeza: 2 patrones generados desde face_buf */
+    vc_load_spr_pattern(SPR_PAT_CUR, cur_p0, cur_p0);   /* marco del cursor */
 
     /* Asegura que el tile transparente existe (ya viene de clear_vram). */
     vc_load_bg_pattern(TILE_BLANK, tile_blank_p0, tile_blank_p0);
@@ -815,80 +954,290 @@ static uint8_t play_game(void) {
  * ESPACIO/ENTER por UART) para empezar. Devuelve 1 para jugar, 0 para salir.
  * =========================================================================== */
 
-/* 1 si se pide empezar (boton de fuego o ESPACIO/ENTER). */
-static uint8_t start_pressed(void) {
+/* ===========================================================================
+ * EDITOR DE CARA
+ * ===========================================================================
+ * Lienzo 8x8 = 8x8 celdas de pantalla. El cursor es un sprite con marco.
+ * Se pinta con el boton de fuego, ciclando el color (1 cuerpo, 2 ojo, 3 pupila).
+ * SALVAR escribe FACE.DAT por la ROM API (MicroFS) y recarga los patrones.
+ *
+ * Entrada:
+ *   joystick : stick mueve, fuego pinta
+ *   teclado  : WASD/flechas mueven, ESPACIO pinta, 1/2/3 eligen color,
+ *              G guarda y sale, Q cancela y sale
+ * =========================================================================== */
+
+#define CANVAS_X   14
+#define CANVAS_Y   8
+
+/* Estado del editor. */
+static uint8_t ed_cx, ed_cy;   /* cursor 0..7 */
+static uint8_t ed_color;       /* 1..3 */
+
+/* Pinta una celda del lienzo segun su indice de color. */
+static void canvas_cell(uint8_t r, uint8_t c) {
+    uint8_t v = FACE_AT(r, c);
+    uint8_t x = (uint8_t)(CANVAS_X + c);
+    uint8_t y = (uint8_t)(CANVAS_Y + r);
+
+    if (v == 0)      paint(x, y, TILE_BLANK, PAL_TEXT);  /* transparente */
+    else if (v == 1) paint(x, y, TILE_BODY,  PAL_BODY);  /* cuerpo       */
+    else if (v == 2) paint(x, y, TILE_WALL,  PAL_WALL);  /* ojo (blanco) */
+    else             paint(x, y, TILE_WALL,  PAL_FRUIT); /* pupila       */
+}
+
+/* Redibuja el lienzo completo. */
+static void canvas_draw_all(void) {
+    uint8_t r, c;
+    for (r = 0; r < 8; r++)
+        for (c = 0; c < 8; c++)
+            canvas_cell(r, c);
+}
+
+/* Coloca el sprite del cursor en su celda. */
+static void cursor_place(void) {
+    vc_sprite_move(SPR_EDIT_CUR,
+                   (uint16_t)((CANVAS_X + ed_cx) * 8),
+                   (uint8_t)((CANVAS_Y + ed_cy) * 8),
+                   VC_SPPAL_1);
+    vc_oam_put(SPR_EDIT_CUR, VC_OAM_TILE, SPR_PAT_CUR);
+}
+
+/* Texto fijo del editor + indicador de color. */
+static void editor_hud(void) {
+    char b[2];
+
+    put_str_pal(11, 1, "DISENA TU CARA", PAL_TITLE);
+    put_str_pal(1, 4,  "MOVER: stick", PAL_TEXT);
+    put_str_pal(1, 5,  "PINTAR: fuego", PAL_TEXT);
+    put_str_pal(1, 20, "COLOR:", PAL_TEXT);
+    b[0] = (char)('0' + ed_color);
+    b[1] = 0;
+    put_str_pal(7, 20, b, PAL_TITLE);
+    put_str_pal(1, 23, "G GUARDAR   Q CANCELAR", PAL_TEXT);
+}
+
+/* Pinta la celda del cursor con el color actual y pasa al siguiente. */
+static void editor_paint(void) {
     char c;
 
-    if (joy_read() & JOY_A_FIRE) return 1;
+    FACE_AT(ed_cy, ed_cx) = ed_color;
+    canvas_cell(ed_cy, ed_cx);
+
+    ed_color = (uint8_t)((ed_color >= 3) ? 1 : ed_color + 1);
+    c = (char)('0' + ed_color);
+    put_str_pal(7, 20, &c, PAL_TITLE);
+}
+
+/* Estado de repeticion del joystick en el editor (autorepeat).
+ * El stick no repite en el mismo frame en que se pulsa: hay un retardo inicial
+ * y luego repite cada REPEAT_DIV frames. Asi un toque mueve UNA celda y
+ * mantener pulsado se desplaza de forma controlada. */
+#define ED_REPEAT_DELAY  14   /* frames antes de empezar a repetir */
+#define ED_REPEAT_DIV     5   /* repite cada 5 frames (el bucle va a 60 Hz) */
+
+static uint8_t ed_joy_prev;   /* estado previo del stick (flanco) */
+static uint8_t ed_hold;       /* frames que lleva mantenido */
+
+/* Editor. Devuelve 1 = guardado, 0 = cancelado. */
+static uint8_t face_editor(void) {
+    uint8_t dirty = 1;
+
+    ed_cx = 0; ed_cy = 0; ed_color = 1;
+    ed_joy_prev = joy_read();     /* parte del estado actual, sin evento fantasma */
+    ed_hold = 0;
+
+    vc_wait_vblank();
+    clear_screen();
+    editor_hud();
+    cursor_place();
+    vc_wait_vblank_end();
+
+    for (;;) {
+        uint8_t j, edge;
+        char c;
+
+        vc_wait_vblank();
+        if (dirty) {
+            canvas_draw_all();
+            cursor_place();
+            dirty = 0;
+        }
+        vc_wait_vblank_end();
+
+        /* --- Joystick, con autorepeat --- */
+        j    = joy_read();
+        edge = (uint8_t)(j & (uint8_t)~ed_joy_prev);   /* recien pulsado */
+        ed_joy_prev = j;
+
+        /* Una "pulsacion efectiva" = flanco de direccion, o repeticion tras
+         * mantener el stick el tiempo de espera. */
+        if (j & (JOY_A_LEFT | JOY_A_RIGHT | JOY_A_UP | JOY_A_DOWN)) {
+            ed_hold++;
+        } else {
+            ed_hold = 0;
+        }
+
+        if ((edge & (JOY_A_LEFT | JOY_A_RIGHT | JOY_A_UP | JOY_A_DOWN)) ||
+            (ed_hold >= ED_REPEAT_DELAY && (ed_hold % ED_REPEAT_DIV) == 0)) {
+
+            if (j & JOY_A_LEFT)       { if (ed_cx)     { ed_cx--; dirty = 1; } }
+            else if (j & JOY_A_RIGHT) { if (ed_cx < 7) { ed_cx++; dirty = 1; } }
+            else if (j & JOY_A_UP)    { if (ed_cy)     { ed_cy--; dirty = 1; } }
+            else if (j & JOY_A_DOWN)  { if (ed_cy < 7) { ed_cy++; dirty = 1; } }
+        }
+
+        /* Boton de fuego: pinta en el FLANCO (una vez por pulsacion). */
+        if (edge & JOY_A_FIRE) {
+            editor_paint();
+            dirty = 1;
+        }
+
+        /* --- Teclado (UART) --- */
+        while (rom_uart_rx_ready()) {
+            c = rom_uart_getc();
+            switch (c) {
+                case 'a': case 'A': if (ed_cx)     { ed_cx--; dirty = 1; } break;
+                case 'd': case 'D': if (ed_cx < 7) { ed_cx++; dirty = 1; } break;
+                case 'w': case 'W': if (ed_cy)     { ed_cy--; dirty = 1; } break;
+                case 's': case 'x': if (ed_cy < 7) { ed_cy++; dirty = 1; } break;
+                case ' ':          editor_paint(); break;
+                case '1': ed_color = 1; dirty = 1; break;
+                case '2': ed_color = 2; dirty = 1; break;
+                case '3': ed_color = 3; dirty = 1; break;
+                case 'g': case 'G':
+                    if (face_save()) {
+                        face_load_patterns();                    /* aplica al instante */
+                        vc_sprite_disable(SPR_EDIT_CUR);
+                        return 1;
+                    }
+                    put_str_pal(1, 25, "ERROR SD", PAL_FRUIT);  /* no sale: no pierde el dibujo */
+                    break;
+                case 'q': case 'Q':
+                    vc_sprite_disable(SPR_EDIT_CUR);
+                    return 0;
+                default: break;
+            }
+        }
+    }
+}
+
+/* Resultados de la pantalla de titulo. */
+#define TITLE_JUGAR   0
+#define TITLE_CARA    1
+#define TITLE_SALIR   2
+
+/* Lector de entrada del menu: devuelve UN evento por llamada.
+ * Reutiliza joystick y teclado igual que el juego. */
+#define EV_NONE   0
+#define EV_UP     1
+#define EV_DOWN   2
+#define EV_FIRE   3
+#define EV_QUIT   4
+
+/* Estado previo del joystick, para detectar flancos (anti-rebote). */
+static uint8_t ev_joy_prev;
+/* Reinicia el anti-rebote (llamar al entrar a una pantalla con menu). */
+static void ev_reset(void) {
+    ev_joy_prev = joy_read();
+}
+
+static uint8_t ev_read(void) {
+    uint8_t j;
+    uint8_t edge;
+    char c;
+
+    j    = joy_read();
+    edge = (uint8_t)(j & (uint8_t)~ev_joy_prev);   /* bits recien pulsados */
+    ev_joy_prev = j;
+
+    if (edge & JOY_A_FIRE) return EV_FIRE;
+    if (edge & JOY_A_UP)   return EV_UP;
+    if (edge & JOY_A_DOWN) return EV_DOWN;
 
     while (rom_uart_rx_ready()) {
         c = rom_uart_getc();
-        if (c == ' ' || c == '\r' || c == '\n' || c == 'e' || c == 'E') return 1;
-        if (c == 'q' || c == 'Q') return 2;   /* salir */
+        switch (c) {
+            case 'w': case 'W': case '8': return EV_UP;
+            case 's': case 'S': case '2': return EV_DOWN;
+            case ' ': case '\r': case '\n': return EV_FIRE;
+            case 'q': case 'Q': return EV_QUIT;
+            default: break;
+        }
     }
-    return 0;
+    return EV_NONE;
 }
 
-/* Pantalla de titulo. Devuelve 1 = jugar, 0 = salir. */
+/* Pinta la lista de opciones, resaltando la seleccionada. */
+static void title_menu_draw(uint8_t sel) {
+    uint8_t i;
+
+    for (i = 0; i < 3; i++) {
+        uint8_t row = (uint8_t)(17 + i * 2);   /* una fila de aire entre opciones */
+        uint8_t pal = (i == sel) ? PAL_TITLE : PAL_TEXT;
+        char mark[2];
+
+        mark[0] = (i == sel) ? '>' : ' ';
+        mark[1] = 0;
+        put_str_pal(13, row, mark, pal);
+
+        if (i == 0)      put_str_pal(15, row, "JUGAR",      pal);
+        else if (i == 1) put_str_pal(15, row, "CREAR CARA", pal);
+        else             put_str_pal(15, row, "SALIR",      pal);
+    }
+}
+
+/* Pantalla de titulo / menu. Devuelve TITLE_* */
 static uint8_t title_screen(void) {
+    uint8_t sel = 0;
+    uint8_t need_redraw = 1;
+
     vc_wait_vblank();
 
     /* Fondo negro en toda la pantalla. */
-    {
-        uint8_t x, y;
-        for (y = 0; y < VC_SCREEN_ROWS; y++)
-            for (x = 0; x < VC_SCREEN_COLS; x++)
-                paint(x, y, TILE_BLANK, PAL_TEXT);
-    }
+    clear_screen();
 
     /* Titulo (letras separadas) en verde. */
-    put_str_pal(15, 8, "S N A K E", PAL_TITLE);
+    put_str_pal(15, 6, "S N A K E", PAL_TITLE);
 
     /* Logo: la cabeza de la serpiente (sprite) entre dos frutas. */
-    paint(12, 11, TILE_FRUIT_FRESA, PAL_FRUIT);
-    paint(27, 11, TILE_FRUIT_MANZANA, PAL_FRUIT);
-    head_place(19, 11, DIR_RIGHT);
+    paint(12, 10, TILE_FRUIT_FRESA, PAL_FRUIT);
+    paint(27, 10, TILE_FRUIT_MANZANA, PAL_FRUIT);
+    head_place(19, 10, DIR_RIGHT);
 
-    /* Ayuda (tinta blanca, paleta 0). */
-    put_str_pal(9, 15, "COME LA FRUTA Y CRECE", PAL_TEXT);
-    put_str_pal(8, 17, "JOYSTICK o WASD/flechas", PAL_TEXT);
+    /* Ayuda. */
+    put_str_pal(8, 13, "COME LA FRUTA Y CRECE", PAL_TEXT);
 
     vc_wait_vblank_end();
 
-    /* Espera al boton. Parpadeo estilo arcade clasico: el texto se enciende y
-     * se apaga a ~1.5 Hz (periodo ~40 frames por estado), y SOLO se escribe en
-     * VRAM cuando cambia el estado (no cada frame) para evitar centelleo. */
-    {
-        uint8_t  shown = 0xFF;  /* 0xFF = aun no dibujado (fuerza el 1er dibujo) */
-        uint16_t hold  = 0;     /* frames que lleva el estado actual */
+    ev_reset();     /* anti-rebote: ignora lo que este pulsado ahora mismo */
 
-        for (;;) {
-            uint8_t r;
-            uint8_t on = (uint8_t)((hold / 40) & 1);   /* 0 = visible, 1 = oculto */
+    for (;;) {
+        vc_wait_vblank();
 
-            vc_wait_vblank();
+        if (need_redraw) {
+            title_menu_draw(sel);
+            head_place(19, 10, DIR_RIGHT);   /* el sprite se pierde si no se refresca */
+            need_redraw = 0;
+        }
 
-            /* Redibuja SOLO en el cambio de estado (on != shown). */
-            if (on != shown) {
-                if (on) {
-                    clear_str_at(14, 21, 11);       /* parpadeo: borra el texto */
-                } else {
-                    put_str_pal(14, 21, "PULSA BOTON", PAL_TITLE);
-                }
-                shown = on;
-            }
-            hold++;
-            vc_wait_vblank_end();
+        vc_wait_vblank_end();
 
-            r = start_pressed();
-            if (r == 1) {
+        switch (ev_read()) {
+            case EV_UP:
+                if (sel > 0) { sel--; need_redraw = 1; }
+                break;
+            case EV_DOWN:
+                if (sel < 2) { sel++; need_redraw = 1; }
+                break;
+            case EV_FIRE:
                 head_hide();
-                return 1;
-            }
-            if (r == 2) {
+                return sel;          /* 0=JUGAR 1=CARA 2=SALIR */
+            case EV_QUIT:
                 head_hide();
-                return 0;
-            }
+                return TITLE_SALIR;
+            default:
+                break;
         }
     }
 }
@@ -997,18 +1346,26 @@ int main(void) {
     joy_init();     /* bits 3-7 del Puerto 1 como entrada (joystick) */
     hs_reset();     /* tabla de records vacia (dura toda la sesion) */
 
-    /* Pantalla de bienvenida: espera al boton antes de empezar. */
-    if (!title_screen()) {
-        bye_screen();
-        exit_with_autoboot();   /* no retorna */
+    /* Cara: de FACE.DAT si existe y es valida, si no la de fabrica. */
+    face_load();
+    face_load_patterns();
+
+    /* Bucle de pantallas: banner -> jugar / editar cara / salir. */
+    for (;;) {
+        uint8_t r = title_screen();
+
+        if (r == TITLE_JUGAR) break;             /* sale del bucle a jugar */
+        if (r == TITLE_SALIR) {
+            bye_screen();
+            exit_with_autoboot();                /* no retorna */
+        }
+        face_editor();                           /* vuelve al banner */
     }
 
     do {
         again = 0;
 
         if (play_game()) {
-            uint8_t x, y;
-
             snd_silence();
             vc_wait_vblank();
 
@@ -1016,11 +1373,7 @@ int main(void) {
             hs_insert(score, snake_len);
 
             /* Limpia toda la pantalla para el panel de fin de partida. */
-            for (y = 0; y < VC_SCREEN_ROWS; y++) {
-                for (x = 0; x < VC_SCREEN_COLS; x++) {
-                    paint(x, y, TILE_BLANK, PAL_TEXT);
-                }
-            }
+            clear_screen();
 
             /* Panel de GAME OVER (centrado; deja sitio al top 5 debajo). */
             put_str_pal(15, 3, "GAME OVER", PAL_TITLE);

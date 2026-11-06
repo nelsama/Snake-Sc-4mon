@@ -1,3 +1,10 @@
 # Artefactos de compilacion (generados por el makefile)
 build/
 output/
+
+# Imagen SD del emulador: el emulador la crea vacia si se lanza con ruta
+# relativa desde este directorio. Nunca debe ir al repo.
+*.img
+
+# Capturas temporales de depuracion
+.*.png
