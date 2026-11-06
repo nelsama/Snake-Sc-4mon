@@ -330,6 +330,54 @@ python tools/emu_agent.py start --sd D:/Proyectos/EmuladorFpga6502/tarjeta.img
 Y añade `*.img` al `.gitignore` del juego: la imagen vacía autogenerada no debe
 acabar en el repo.
 
+### 6.2 El programa se queda clavado en una dirección de `video.o`
+
+Si `/state.txt` muestra el **PC parado** en una dirección que cae dentro de
+`vc.lib(video.o)` y los ciclos **siguen subiendo**, no se ha colgado la CPU:
+la librería está esperando para siempre al core de vídeo.
+
+**Causa habitual:** llamar a `vc_wait_vblank`, `vc_wait_ready`, `vc_pal_set_*`,
+`vc_load_spr_pattern` o `vc_put_cell` **fuera** del VBLANK. La escritura no llega
+a completarse y el siguiente *handshake* no termina nunca.
+
+**Cómo localizarlo sin adivinar.** Con el mapa del linker sabes qué objeto cae
+en cada dirección:
+
+```
+grep -n -A2 "vc.lib(video.o)" output/game.map
+```
+
+Si el PC cae en ese rango, sospecha del VBLANK antes que de tu lógica.
+
+**Regla:** cualquier función que toque VRAM, OAM o paletas debe llamarse entre
+`vc_wait_vblank()` y `vc_wait_vblank_end()`. Incluye las de **arranque**, no solo
+las del bucle de juego: es fácil acordarse en el `setup()` y olvidarlo en un
+`reload()` posterior.
+
+### 6.3 En las paletas de fondo el color 0 es SIEMPRE transparente
+
+Una celda de fondo no puede pintar con el color 0: ese índice muestra
+`BG_COLOR`. Los colores útiles son **1, 2 y 3**.
+
+Se nota porque todo sale **corrido un índice**: el color que pones en el 0 no
+aparece y el 3 enseña lo que esperabas en el 2. Es un fallo silencioso, sin error
+de compilación.
+
+**Consecuencia práctica:** si necesitas **cuatro** colores en celdas de fondo no
+los hay. Tres como máximo, y uno de ellos suele estar ocupado por la tinta del
+texto (color 3).
+
+### 6.4 Celdas de fondo y sprites NO comparten paleta
+
+Son dos espacios distintos: fondo usa `VC_BGPAL_0..3` (entradas 0-15) y sprite
+`VC_SPPAL_0..3` (entradas 16-31). Poner un índice de sprite en el atributo de
+una celda **no es válido** y el resultado es impredecible.
+
+Si un mismo elemento aparece a la vez como tile y como sprite (el cuerpo de la
+serpiente, sin ir más lejos), **no se puede compartir la paleta**: hay que
+escribir el mismo color en las dos. Una función `apply_color()` que toque todas
+las paletas implicadas evita que se desincronicen.
+
 ---
 
 ## 7. Checklist para un juego nuevo
@@ -338,8 +386,11 @@ acabar en el repo.
 - [ ] Decidido: lib local copiada o referenciada (y anotado cómo actualizarla).
 - [ ] `setup_video()`: `wait_ready` → `vblank` → `clear_vram` → fondo → paletas → patrones.
 - [ ] Fondo con `vc_set_bgcolor`; contenido en paletas 0/1/2 (dejar la 3 al margen).
+- [ ] Recordado que en **fondo el color 0 es transparente** y que fondo y sprite
+      no comparten paleta (§6.3, §6.4).
 - [ ] Tiles propios fuera de `$20-$7F`; letras dentro de `$20-$7F`.
-- [ ] Todo el movimiento de OAM/VRAM/scroll dentro del VBLANK.
+- [ ] Todo el movimiento de OAM/VRAM/scroll dentro del VBLANK (¡también en el
+      arranque y en las recargas!, §6.2).
 - [ ] Lo que gira/espeja → sprite con `VC_SPR_FLIP_*` (o 4 patrones si es tile).
 - [ ] Texto: función que **recorta**, centrado por `(40-len)/2`, filas 1..28.
 - [ ] RNG sembrado con `$D41B` + `rom_get_micros()` (nunca semilla fija).

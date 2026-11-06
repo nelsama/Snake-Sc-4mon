@@ -271,8 +271,8 @@ static uint8_t  dead;              /* ya choco (pausa de muerte en curso)     */
  * CARA EDITABLE (datos)
  * ===========================================================================
  * Un unico buffer que es a la vez el contenido de FACE.DAT y la matriz de
- * edicion: [0..1] = magic "FC", [2..65] = 64 celdas (8x8), [66..71] = paleta
- * reservada para la fase 2 (6 bytes, sin usar todavia).
+ * edicion: [0..1] = magic "FC", [2..65] = 64 celdas (8x8),
+ * [66] = color del cuerpo, [67..71] = reservado (sin usar).
  *
  * Compartir el buffer evita duplicar la cara en RAM: guardar es un
  * rom_mfs_write_via_zp() directo, sin copias.
