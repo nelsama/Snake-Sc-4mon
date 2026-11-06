@@ -1019,14 +1019,15 @@ static void editor_hud(void) {
 
 /* Pinta la celda del cursor con el color actual y pasa al siguiente. */
 static void editor_paint(void) {
-    char c;
+    char b[2];
 
     FACE_AT(ed_cy, ed_cx) = ed_color;
     canvas_cell(ed_cy, ed_cx);
 
     ed_color = (uint8_t)((ed_color >= 3) ? 1 : ed_color + 1);
-    c = (char)('0' + ed_color);
-    put_str_pal(7, 20, &c, PAL_TITLE);
+    b[0] = (char)('0' + ed_color);
+    b[1] = 0;
+    put_str_pal(7, 20, b, PAL_TITLE);
 }
 
 /* Estado de repeticion del joystick en el editor (autorepeat).
