@@ -83,13 +83,16 @@ static const uint8_t tile_wall_p0[8] = { 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF
 /* Bloques solidos del lienzo del editor, uno por color de PAL_CANVAS:
  *   TILE_SOL0 -> color 0 (blanco), TILE_SOL1 -> color 1 (azul),
  *   TILE_SOL2 -> color 2 (amarillo).  El color 3 esta reservado (BG_COLOR). */
-/* Bloques solidos del lienzo, uno por indice de color de PAL_CANVAS
- * (0 = azul, 1 = amarillo, 2 = blanco): el color lo pone el plano que se activa. */
+/* Bloques solidos del lienzo del editor. Cada uno pinta en un indice DISTINTO
+ * de la paleta del lienzo (PAL_CANVAS), asi el color lo decide la paleta:
+ *   TILE_SOL0 -> color 0
+ *   TILE_SOL1 -> color 1
+ *   TILE_SOL2 -> color 2
+ * El color 3 no se usa (la paleta 3 es BG_COLOR y no se puede tocar).
+ * plano0 marca el bit 0 y plano1 el bit 1 de cada pixel. */
 static const uint8_t tile_sol0_p0[8] = { 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF };
-static const uint8_t tile_sol1_p1[8] = { 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF };
-static const uint8_t tile_sol2_p0[8] = { 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00 };
-static const uint8_t tile_sol2_p1[8] = { 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF };
-static const uint8_t tile_zero[8]     = { 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00 };
+static const uint8_t tile_zero[8]    = { 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00 };
+static const uint8_t tile_ff[8]      = { 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF };
 
 /* Cuerpo de la serpiente (simetrico), tile de fondo en $11. */
 static const uint8_t tile_body_p0[8] = { 0x3C,0x7E,0xFF,0xFF,0xFF,0xFF,0x7E,0x3C };
@@ -132,9 +135,10 @@ static const uint8_t tile_fruit_apple_p1[8] = { 0x18,0x18,0x00,0x00,0x00,0x00,0x
 #define TILE_BODY     0x11   /* cuerpo de la serpiente (simetrico)            */
 #define TILE_FRUIT_FRESA  0x12   /* fresa   (tile de fondo)                    */
 #define TILE_FRUIT_MANZANA 0x13  /* manzana (tile de fondo)                    */
-#define TILE_SOL0     0x14   /* bloque solido color 0 (azul del lienzo)     */
-#define TILE_SOL1     0x15   /* bloque solido color 1 (amarillo del lienzo) */
-#define TILE_SOL2     0x16   /* bloque solido color 2 (blanco del lienzo)   */
+/* Bloques solidos del lienzo del editor, uno por color. */
+#define TILE_SOL0     0x1A   /* pixel en color 0 */
+#define TILE_SOL1     0x1B   /* pixel en color 1 */
+#define TILE_SOL2     0x1C   /* pixel en color 2 */
 
 /* Indices de color del editor de cara (lo que se guarda en FACE.DAT).
  * Son los numeros que el usuario ve en el HUD:
@@ -183,7 +187,8 @@ static const uint8_t tile_fruit_apple_p1[8] = { 0x18,0x18,0x00,0x00,0x00,0x00,0x
  * el COLOR 3 (tinta verde del texto), asi que los colores 0, 1 y 2 quedan libres:
  *     color 0 = azul, color 1 = amarillo, color 2 = blanco
  * La paleta 3 NO sirve: su color 3 es BG_COLOR (entrada 15) y no se puede tocar. */
-#define PAL_CANVAS   VC_BGPAL_2
+#define PAL_CANVAS   VC_BGPAL_2   /* lienzo: color 1 = azul, color 2 = amarillo */
+#define PAL_CANVAS_W VC_BGPAL_1   /* lienzo: color 3 = blanco                   */
 
 /* NOTA: la paleta 3 no se usa para texto: su color 3 es BG_COLOR (entrada 15),
  * asi que reescribirla cambiaria el color de fondo. Los subtitulos van en blanco. */
@@ -882,11 +887,16 @@ static void setup_video(void) {
     vc_pal_set_bg(PAL_FRUIT, 1, VC_RGB444(0xF, 0x0, 0x0));  /* rojo  */
     vc_pal_set_bg(PAL_FRUIT, 2, VC_RGB444(0x0, 0xF, 0x0));  /* verde */
     vc_pal_set_bg(PAL_FRUIT, 3, VC_RGB444(0x0, 0x0, 0x0));  /* negro */
-    /* Paleta del LIENZO del editor (paleta 3): 0 = azul, 1 = amarillo,
-     * 2 = blanco. El color 3 NO se toca: es BG_COLOR (entrada 15). */
-    vc_pal_set_bg(PAL_CANVAS, 0, VC_RGB444(0x0, 0x0, 0xA));  /* azul     */
-    vc_pal_set_bg(PAL_CANVAS, 1, VC_RGB444(0xF, 0xF, 0x0));  /* amarillo */
-    vc_pal_set_bg(PAL_CANVAS, 2, VC_RGB444(0xF, 0xF, 0xF));  /* blanco   */
+    /* Paleta del LIENZO del editor (VC_BGPAL_2).
+     * OJO: en el FONDO el color 0 es SIEMPRE transparente (se ve BG_COLOR), asi
+     * que los colores utiles son 1 y 2 (el 3 es la tinta del texto y no se toca).
+     * Hacen falta TRES colores y solo hay dos libres, asi que el blanco se pinta
+     * con el color 3 de una paleta aparte (ver canvas_cell).
+     *     color 1 = azul, color 2 = amarillo */
+    vc_pal_set_bg(PAL_CANVAS, 1, VC_RGB444(0x0, 0x0, 0xA));  /* azul     */
+    vc_pal_set_bg(PAL_CANVAS, 2, VC_RGB444(0xF, 0xF, 0x0));  /* amarillo */
+    /* Blanco del lienzo: color 3 de la paleta 1 (que no se usa para texto). */
+    vc_pal_set_bg(PAL_CANVAS_W, 3, VC_RGB444(0xF, 0xF, 0xF));
     /* Paletas del banner: solo se usa el COLOR 3 (tinta del texto de la fuente).
      * OJO: la paleta 3 NO se toca, porque su color 3 es la entrada 15 = BG_COLOR
      * (comparten entrada); reescribirla cambiaria el color de fondo. */
@@ -911,9 +921,14 @@ static void setup_video(void) {
     /* TILE_SOL0 = color 0 (azul): solo plano0.
      * TILE_SOL1 = color 1 (amarillo): solo plano1.
      * TILE_SOL2 = color 2 (blanco): ambos planos. */
-    vc_load_bg_pattern(TILE_SOL0, tile_sol0_p0, tile_zero);
-    vc_load_bg_pattern(TILE_SOL1, tile_zero,    tile_sol1_p1);
-    vc_load_bg_pattern(TILE_SOL2, tile_sol2_p0, tile_sol2_p1);
+    /* Tiles del lienzo. El color 0 del fondo es transparente, asi que los tres
+     * colores utiles son 1, 2 y 3:
+     *   TILE_SOL0 -> color 1 (azul,      PAL_CANVAS)
+     *   TILE_SOL1 -> color 2 (amarillo,  PAL_CANVAS)
+     *   TILE_SOL2 -> color 3 (blanco,    PAL_CANVAS_W) */
+    vc_load_bg_pattern(TILE_SOL0, tile_ff, tile_zero);
+    vc_load_bg_pattern(TILE_SOL1, tile_zero, tile_ff);
+    vc_load_bg_pattern(TILE_SOL2, tile_ff, tile_ff);
     face_load_patterns();   /* cabeza: 2 patrones generados desde face_buf */
     vc_load_spr_pattern(SPR_PAT_CUR, cur_p0, cur_p0);   /* marco del cursor */
     /* Colores del cursor: color 1 = el borde, color 2 = interior transparente
@@ -1066,14 +1081,14 @@ static void canvas_cell(uint8_t r, uint8_t c) {
     uint8_t y = (uint8_t)(CANVAS_Y + r);
 
     if (v == FC_TRANS) {
-        paint(x, y, TILE_BLANK, PAL_CANVAS);
+        /* Transparente: hueco real, se ve el negro del fondo como en el juego. */
+        paint(x, y, TILE_BLANK, PAL_TEXT);
     } else if (v == FC_AZUL) {
-        /* El tile del CUERPO pinta en el color 1; la paleta lo pone azul. */
-        paint(x, y, TILE_BODY, PAL_BODY);
+        paint(x, y, TILE_SOL0, PAL_CANVAS);     /* color 1 = azul     */
     } else if (v == FC_AMARILLO) {
-        paint(x, y, TILE_SOL1, PAL_CANVAS);   /* color 1 de PAL_CANVAS = amarillo */
+        paint(x, y, TILE_SOL1, PAL_CANVAS);     /* color 2 = amarillo */
     } else {
-        paint(x, y, TILE_WALL, PAL_WALL);     /* color 3 = blanco */
+        paint(x, y, TILE_SOL2, PAL_CANVAS_W);   /* color 3 = blanco   */
     }
 }
 
