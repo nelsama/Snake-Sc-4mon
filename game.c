@@ -54,7 +54,7 @@
  * ni de lejos (haria falta comer 830 frutas). Se reserva un tope holgado y, si
  * se alcanza, la partida termina como "victoria" igual que llenar el tablero.
  * 400 celdas = 800 bytes (ahorra ~870 B de BSS). */
-#define MAX_SNAKE     290
+#define MAX_SNAKE     100
 
 /* ===========================================================================
  * PATRONES
@@ -193,6 +193,16 @@ static const uint8_t tile_fruit_apple_p1[8] = { 0x18,0x18,0x00,0x00,0x00,0x00,0x
 /* NOTA: la paleta 3 no se usa para texto: su color 3 es BG_COLOR (entrada 15),
  * asi que reescribirla cambiaria el color de fondo. Los subtitulos van en blanco. */
 
+/* ---------------------------------------------------------------------------
+ * COLOR DEL CUERPO (elegible)
+ * ---------------------------------------------------------------------------
+ * El cuerpo lo usan DOS cosas: el tile TILE_BODY (color 1 de PAL_BODY) y el
+ * sprite de la cabeza (color 1 de PAL_SNAKE_S). Con una sola escritura en cada
+ * una queda todo coherente.
+ * El indice va en FACE.DAT (byte FACE_PAL) y se aplica con body_apply(). */
+#define BODY_COUNT   4
+#define BODY_DEF     0      /* 0 = azul: el de siempre */
+
 /* Velocidad: frames entre pasos. Baja al subir de nivel (mas rapido). */
 #define TICK_FRAMES_1 16    /* nivel 1 (arranque lento) */
 #define TICK_FRAMES_2 13
@@ -264,7 +274,7 @@ static uint8_t  dead;              /* ya choco (pausa de muerte en curso)     */
 #define FACE_MAGIC0   'F'
 #define FACE_MAGIC1   'C'
 #define FACE_DATA     2                    /* offset de la matriz 8x8 */
-#define FACE_PAL      66                   /* offset de la paleta (reservado) */
+#define FACE_PAL      66                   /* offset del color de CUERPO */
 #define FACE_LEN      72                   /* tamano total del archivo */
 
 /* Acceso a la celda (r,c) de la cara dentro del buffer. */
@@ -374,6 +384,27 @@ static void clear_screen(void) {
             paint(x, y, TILE_BLANK, PAL_TEXT);
 }
 
+/* Pone el color del CUERPO en las dos paletas que lo usan. Solo 4 colores:
+ * el indice va en FACE_PAL y se recorre con una suma sin signo, sin tablas ni
+ * modulo (la RAM y el CODE van justos y el 6502 no tiene division). */
+/* Pone el color del CUERPO en las dos paletas que lo usan. Solo 4 colores, con
+ * un switch: no hay tabla ni division (la RAM y el CODE van justos y el 6502 no
+ * tiene instructiva de modulo). */
+static void body_apply(void) {
+    uint8_t k = face_buf[FACE_PAL];
+    uint16_t c;
+
+    if (k >= BODY_COUNT) { k = BODY_DEF; face_buf[FACE_PAL] = k; }
+    switch (k) {
+        case 1:  c = VC_RGB444(0xF, 0xF, 0xF); break;  /* blanco   */
+        case 2:  c = VC_RGB444(0x0, 0xA, 0x0); break;  /* verde    */
+        case 3:  c = VC_RGB444(0xF, 0xF, 0x0); break;  /* amarillo */
+        default: c = VC_RGB444(0x0, 0x0, 0xA); break;  /* azul     */
+    }
+    vc_pal_set_bg(PAL_BODY,    1, c);
+    vc_pal_set_spr(PAL_SNAKE_S, 1, c);
+}
+
 /* Carga en el banco de sprites los DOS patrones que usa la cabeza:
  *   SPR_PAT_HEAD_R : la cara tal cual (mira a la derecha)
  *   SPR_PAT_HEAD_U : la misma cara girada 90 grados (mira arriba)
@@ -423,7 +454,8 @@ static void face_default(void) {
     face_buf[0] = FACE_MAGIC0;
     face_buf[1] = FACE_MAGIC1;
     for (i = 0; i < 64; i++) face_buf[FACE_DATA + i] = face_factory[i];
-    for (i = 0; i < 6; i++)  face_buf[FACE_PAL + i]  = 0;   /* reservado (fase 2) */
+    face_buf[FACE_PAL] = BODY_DEF;              /* color de cuerpo */
+    for (i = 1; i < 6; i++) face_buf[FACE_PAL + i] = 0;   /* resto reservado */
 }
 
 /* Carga la cara desde FACE.DAT (MicroFS de la ROM API).
@@ -882,7 +914,7 @@ static void setup_video(void) {
      * El CUERPO es un TILE (paleta de fondo 0): indice 1 = azul oscuro.
      * Los muros y el texto usan el color 3 de la paleta 0 (blanco). */
     vc_pal_set_bg(PAL_WALL,  3, VC_RGB444(0xF, 0xF, 0xF));  /* blanco (muros/HUD) */
-    vc_pal_set_bg(PAL_BODY,  1, VC_RGB444(0x0, 0x0, 0xA));  /* azul oscuro (cuerpo) */
+    body_apply();                                          /* azul oscuro (cuerpo) */
     /* Paleta de las frutas (3 colores): 1 = rojo, 2 = verde, 3 = negro. */
     vc_pal_set_bg(PAL_FRUIT, 1, VC_RGB444(0xF, 0x0, 0x0));  /* rojo  */
     vc_pal_set_bg(PAL_FRUIT, 2, VC_RGB444(0x0, 0xF, 0x0));  /* verde */
@@ -923,12 +955,12 @@ static void setup_video(void) {
      * TILE_SOL2 = color 2 (blanco): ambos planos. */
     /* Tiles del lienzo. El color 0 del fondo es transparente, asi que los tres
      * colores utiles son 1, 2 y 3:
-     *   TILE_SOL0 -> color 1 (azul,      PAL_CANVAS)
-     *   TILE_SOL1 -> color 2 (amarillo,  PAL_CANVAS)
-     *   TILE_SOL2 -> color 3 (blanco,    PAL_CANVAS_W) */
-    vc_load_bg_pattern(TILE_SOL0, tile_ff, tile_zero);
-    vc_load_bg_pattern(TILE_SOL1, tile_zero, tile_ff);
-    vc_load_bg_pattern(TILE_SOL2, tile_ff, tile_ff);
+     *   TILE_SOL0 -> color 1 (azul del lienzo / cuerpo)
+     *   TILE_SOL1 -> color 2 (amarillo)
+     *   TILE_SOL2 -> color 3 (blanco) */
+    vc_load_bg_pattern(TILE_SOL0, tile_ff, tile_zero);   /* color 1 */
+    vc_load_bg_pattern(TILE_SOL1, tile_zero, tile_ff);   /* color 2 */
+    vc_load_bg_pattern(TILE_SOL2, tile_ff, tile_ff);     /* color 3 */
     face_load_patterns();   /* cabeza: 2 patrones generados desde face_buf */
     vc_load_spr_pattern(SPR_PAT_CUR, cur_p0, cur_p0);   /* marco del cursor */
     /* Colores del cursor: color 1 = el borde, color 2 = interior transparente
@@ -1070,9 +1102,15 @@ static uint8_t play_game(void) {
 #define CANVAS_X   14
 #define CANVAS_Y   8
 
+/* Recuadro del color del cuerpo: a la DERECHA del lienzo de 8x8. El cursor
+ * puede salir del lienzo hacia alla y se mueve libremente entre los dos. */
+#define BODY_COL     26        /* columna del recuadro (a la derecha del 8x8) */
+#define BODY_ROW     11        /* fila del recuadro                            */
+
 /* Estado del editor. */
-static uint8_t ed_cx, ed_cy;   /* cursor 0..7 */
-static uint8_t ed_color;       /* 1..4 (FC_*) */
+static uint8_t ed_cx, ed_cy;   /* cursor dentro del lienzo 0..7 */
+static uint8_t ed_color;       /* 0, 1, 2, 4 (FC_*) */
+static uint8_t ed_body;        /* 1 = el cursor esta en el selector de color */
 
 /* Pinta una celda del lienzo segun su indice de color. */
 static void canvas_cell(uint8_t r, uint8_t c) {
@@ -1100,12 +1138,38 @@ static void canvas_draw_all(void) {
             canvas_cell(r, c);
 }
 
-/* Coloca el sprite del cursor en su celda. */
+/* ---------------------------------------------------------------------------
+ * SELECTOR DE COLOR DE CUERPO
+ * --------------------------------------------------------------------------- */
+
+/* Dibuja el recuadro del color del cuerpo, a la derecha del lienzo: un bloque
+ * de 2x2 celdas con el color elegido. Usa TILE_SOL0, que pinta en el COLOR 1:
+ * el mismo indice en que body_apply() guarda el color del cuerpo. */
+#define BODY_W  2
+#define BODY_H  2
+
+static void body_sel_draw(void) {
+    uint8_t i, j;
+    for (i = 0; i < BODY_H; i++)
+        for (j = 0; j < BODY_W; j++)
+            paint((uint8_t)(BODY_COL + j), (uint8_t)(BODY_ROW + i),
+                  TILE_SOL0, PAL_BODY);      /* color 1 = cuerpo */
+    put_str_pal((uint8_t)(BODY_COL - 1), (uint8_t)(BODY_ROW - 1), "CUERPO", PAL_TEXT);
+}
+
+/* Coloca el sprite del cursor en su celda (o en el selector de color). */
 static void cursor_place(void) {
-    vc_sprite_move(SPR_EDIT_CUR,
-                   (uint16_t)((CANVAS_X + ed_cx) * 8),
-                   (uint8_t)((CANVAS_Y + ed_cy) * 8),
-                   VC_SPPAL_1);
+    if (ed_body) {
+        vc_sprite_move(SPR_EDIT_CUR,
+                       (uint16_t)(BODY_COL * 8),
+                       (uint8_t)(BODY_ROW * 8),
+                       VC_SPPAL_1);
+    } else {
+        vc_sprite_move(SPR_EDIT_CUR,
+                       (uint16_t)((CANVAS_X + ed_cx) * 8),
+                       (uint8_t)((CANVAS_Y + ed_cy) * 8),
+                       VC_SPPAL_1);
+    }
     vc_oam_put(SPR_EDIT_CUR, VC_OAM_TILE, SPR_PAT_CUR);
 }
 
@@ -1127,6 +1191,7 @@ static void editor_hud(void) {
     b[1] = 0;
     put_str_pal(7, 20, b, PAL_TITLE);
     put_str_pal(1, 23, "G GUARDAR   Q CANCELAR", PAL_TEXT);
+    put_str_pal(1, 25, "CUERPO:", PAL_TEXT);
 }
 
 /* Repinta el numero de color del HUD. */
@@ -1162,16 +1227,40 @@ static void editor_paint(void) {
 #define ED_REPEAT_DIV     5   /* repite cada 5 frames (el bucle va a 60 Hz) */
 #define ED_FLASH_DIV     16   /* frames entre cambios de color del cursor (~9 Hz) */
 
+/* ---------------------------------------------------------------------------
+ * SELECTOR DE COLOR DE CUERPO
+ * ---------------------------------------------------------------------------
+ * Si el cursor baja hasta la ultima fila del lienzo (ed_body = 1),
+ * izquierda/derecha recorren la lista de colores y el cambio se aplica al
+ * instante en el tile del cuerpo y en la cabeza: lo que se ve es exactamente el
+ * resultado final. El bloque y las flechas se dibujan en body_sel_draw(). */
+
 static uint8_t ed_joy_prev;   /* estado previo del stick (flanco) */
 static uint8_t ed_hold;       /* frames que lleva mantenido */
 static uint8_t ed_flash;      /* contador del parpadeo del cursor */
 static uint8_t ed_flash_on;   /* 1 = marco blanco, 0 = marco negro */
+
+/* Una direccion en el editor: 0=izq 1=der 2=arriba 3=abajo.
+ * El cursor se mueve libre entre el lienzo 8x8 y el recuadro del color del
+ * cuerpo, que esta a su derecha: desde la ultima columna se sale al recuadro y
+ * desde el recuadro, hacia la izquierda, se vuelve al lienzo. */
+static void ed_move(uint8_t d) {
+    if (ed_body) {                       /* en el recuadro del cuerpo */
+        if (d == 0) ed_body = 0;         /* vuelve al lienzo (misma fila) */
+        return;
+    }
+    if (d == 0)      { if (ed_cx) ed_cx--; }
+    else if (d == 1) { if (ed_cx < 7) ed_cx++; else ed_body = 1; }
+    else if (d == 2) { if (ed_cy) ed_cy--; }
+    else             { if (ed_cy < 7) ed_cy++; }
+}
 
 /* Editor. Devuelve 1 = guardado, 0 = cancelado. */
 static uint8_t face_editor(void) {
     uint8_t dirty = 1;
 
     ed_cx = 0; ed_cy = 0; ed_color = FC_AZUL;
+    ed_body = 0;
     ed_joy_prev = joy_read();     /* parte del estado actual, sin evento fantasma */
     ed_hold = 0;
     ed_flash = 0;
@@ -1190,6 +1279,7 @@ static uint8_t face_editor(void) {
         vc_wait_vblank();
         if (dirty) {
             canvas_draw_all();
+            body_sel_draw();
             cursor_place();
             dirty = 0;
         }
@@ -1217,27 +1307,42 @@ static uint8_t face_editor(void) {
         if ((edge & (JOY_A_LEFT | JOY_A_RIGHT | JOY_A_UP | JOY_A_DOWN)) ||
             (ed_hold >= ED_REPEAT_DELAY && (ed_hold % ED_REPEAT_DIV) == 0)) {
 
-            if (j & JOY_A_LEFT)       { if (ed_cx)     { ed_cx--; dirty = 1; } }
-            else if (j & JOY_A_RIGHT) { if (ed_cx < 7) { ed_cx++; dirty = 1; } }
-            else if (j & JOY_A_UP)    { if (ed_cy)     { ed_cy--; dirty = 1; } }
-            else if (j & JOY_A_DOWN)  { if (ed_cy < 7) { ed_cy++; dirty = 1; } }
+            uint8_t d = 3;
+            if (j & JOY_A_LEFT)       d = 0;
+            else if (j & JOY_A_RIGHT) d = 1;
+            else if (j & JOY_A_UP)    d = 2;
+            ed_move(d);
+            if (ed_body) body_apply();   /* paleta: dentro del VBLANK */
+            cursor_place();
+            dirty = 1;
         }
 
-        /* Boton de fuego: pinta en el FLANCO (una vez por pulsacion). */
+        /* Boton de fuego: pinta, o cambia el color del CUERPO si el cursor
+         * esta en el recuadro. Solo en el FLANCO (una vez por pulsacion). */
         if (edge & JOY_A_FIRE) {
-            editor_paint();
-            dirty = 1;
+            if (ed_body) {
+                face_buf[FACE_PAL] = (uint8_t)((face_buf[FACE_PAL] + 1) & 3);
+                body_apply();          /* dentro del VBLANK */
+                dirty = 1;
+            } else {
+                editor_paint();
+                dirty = 1;
+            }
         }
 
         /* --- Teclado (UART) --- */
         while (rom_uart_rx_ready()) {
             c = rom_uart_getc();
             switch (c) {
-                case 'a': case 'A': if (ed_cx)     { ed_cx--; dirty = 1; } break;
-                case 'd': case 'D': if (ed_cx < 7) { ed_cx++; dirty = 1; } break;
-                case 'w': case 'W': if (ed_cy)     { ed_cy--; dirty = 1; } break;
-                case 's': case 'x': if (ed_cy < 7) { ed_cy++; dirty = 1; } break;
-                case ' ':          editor_paint(); break;
+                case 'a': case 'A': ed_move(0); dirty = 1; if (ed_body) body_apply(); cursor_place(); break;
+                case 'd': case 'D': ed_move(1); dirty = 1; if (ed_body) body_apply(); cursor_place(); break;
+                case 'w': case 'W': ed_move(2); dirty = 1; cursor_place(); break;
+                case 's': case 'x': ed_move(3); dirty = 1; cursor_place(); break;
+                case ' ':          if (ed_body) {
+                                       face_buf[FACE_PAL] = (uint8_t)((face_buf[FACE_PAL] + 1) & 3);
+                                       body_apply(); dirty = 1;
+                                   } else editor_paint();
+                                   break;
                 case '0': ed_color = FC_TRANS;    editor_num(); break;
                 case '1': ed_color = FC_AZUL;     editor_num(); break;
                 case '2': ed_color = FC_AMARILLO; editor_num(); break;
@@ -1248,7 +1353,7 @@ static uint8_t face_editor(void) {
                         vc_sprite_disable(SPR_EDIT_CUR);
                         return 1;
                     }
-                    put_str_pal(1, 25, "ERROR SD", PAL_FRUIT);  /* no sale: no pierde el dibujo */
+                    put_str_pal(1, 27, "ERROR SD", PAL_FRUIT);  /* no sale: no pierde el dibujo */
                     break;
                 case 'q': case 'Q':
                     vc_sprite_disable(SPR_EDIT_CUR);
@@ -1508,6 +1613,7 @@ int main(void) {
 
     /* Cara: de FACE.DAT si existe y es valida, si no la de fabrica. */
     face_load();
+    body_apply();      /* el color del cuerpo segun FACE.DAT */
     face_load_patterns();
 
     /* Bucle principal: banner -> jugar / editar cara / salir. Tras cada
