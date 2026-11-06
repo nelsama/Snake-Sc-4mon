@@ -97,7 +97,10 @@ static const uint8_t face_factory[64] = {
     0,0,1,1,1,1,1,0
 };
 
-/* Patron del cursor del editor de cara: marco blanco. */
+/* Patron del cursor del editor de cara: marco de color 1 (relleno) y color 2
+ * (interior transparente). El color 1 sale de la paleta que se le pasa al
+ * sprite, y se alterna entre dos paletas (blanco y negro) para que el marco
+ * nunca se pierda sobre una zona blanca del dibujo. */
 static const uint8_t cur_p0[8] = { 0xFF,0x81,0x81,0x81,0x81,0x81,0x81,0xFF };
 
 /* --- FRUTAS (tiles de fondo). 3 colores: 1 = rojo, 2 = verde, 3 = negro. --- */
@@ -127,6 +130,14 @@ static const uint8_t tile_fruit_apple_p1[8] = { 0x18,0x18,0x00,0x00,0x00,0x00,0x
 /* Sprite del cursor del editor de cara. */
 #define SPR_EDIT_CUR   1     /* slot de OAM del cursor                        */
 #define SPR_PAT_CUR    4     /* patron de sprite del marco del cursor         */
+
+/* El marco del cursor alterna entre dos paletas para no perderse nunca.
+ * El patron pinta el borde con el COLOR 1 y el interior con el COLOR 2, que
+ * es transparente en ambas. Asi el borde pasa de blanco a negro y viceversa:
+ * sobre el blanco del ojo se ve el negro y sobre el fondo negro se ve el
+ * blanco. Ninguna de las dos paletas toca las de la cabeza/frutas. */
+#define PAL_CUR_ON   VC_SPPAL_0   /* cursor visible: borde blanco */
+#define PAL_CUR_OFF  VC_SPPAL_1   /* cursor invertido: borde negro */
 
 /* Paletas. La cabeza es sprite -> usa una paleta de SPRITE (VC_SPPAL_*).
  * El cuerpo es tile -> usa una paleta de FONDO (VC_BGPAL_*). */
@@ -837,6 +848,12 @@ static void setup_video(void) {
     vc_load_bg_pattern(TILE_FRUIT_MANZANA, tile_fruit_apple_p0, tile_fruit_apple_p1);
     face_load_patterns();   /* cabeza: 2 patrones generados desde face_buf */
     vc_load_spr_pattern(SPR_PAT_CUR, cur_p0, cur_p0);   /* marco del cursor */
+    /* Colores del cursor: color 1 = el borde, color 2 = interior transparente
+     * (mismo negro que el fondo). Se alterna entre estas dos paletas. */
+    vc_pal_set_spr(PAL_CUR_ON,  1, VC_RGB444(0xF, 0xF, 0xF));
+    vc_pal_set_spr(PAL_CUR_ON,  2, VC_RGB444(0x0, 0x0, 0x0));
+    vc_pal_set_spr(PAL_CUR_OFF, 1, VC_RGB444(0x0, 0x0, 0x0));
+    vc_pal_set_spr(PAL_CUR_OFF, 2, VC_RGB444(0x0, 0x0, 0x0));
 
     /* Asegura que el tile transparente existe (ya viene de clear_vram). */
     vc_load_bg_pattern(TILE_BLANK, tile_blank_p0, tile_blank_p0);
@@ -1003,6 +1020,12 @@ static void cursor_place(void) {
     vc_oam_put(SPR_EDIT_CUR, VC_OAM_TILE, SPR_PAT_CUR);
 }
 
+/* Alterna el color del marco (blanco <-> negro) para que no se pierda sobre
+ * las zonas blancas del dibujo. */
+static void cursor_flash(uint8_t on) {
+    vc_oam_put(SPR_EDIT_CUR, VC_OAM_FLAGS, (uint8_t)(on ? PAL_CUR_ON : PAL_CUR_OFF));
+}
+
 /* Texto fijo del editor + indicador de color. */
 static void editor_hud(void) {
     char b[2];
@@ -1036,9 +1059,12 @@ static void editor_paint(void) {
  * mantener pulsado se desplaza de forma controlada. */
 #define ED_REPEAT_DELAY  14   /* frames antes de empezar a repetir */
 #define ED_REPEAT_DIV     5   /* repite cada 5 frames (el bucle va a 60 Hz) */
+#define ED_FLASH_DIV     16   /* frames entre cambios de color del cursor (~9 Hz) */
 
 static uint8_t ed_joy_prev;   /* estado previo del stick (flanco) */
 static uint8_t ed_hold;       /* frames que lleva mantenido */
+static uint8_t ed_flash;      /* contador del parpadeo del cursor */
+static uint8_t ed_flash_on;   /* 1 = marco blanco, 0 = marco negro */
 
 /* Editor. Devuelve 1 = guardado, 0 = cancelado. */
 static uint8_t face_editor(void) {
@@ -1047,6 +1073,8 @@ static uint8_t face_editor(void) {
     ed_cx = 0; ed_cy = 0; ed_color = 1;
     ed_joy_prev = joy_read();     /* parte del estado actual, sin evento fantasma */
     ed_hold = 0;
+    ed_flash = 0;
+    ed_flash_on = 1;
 
     vc_wait_vblank();
     clear_screen();
@@ -1064,6 +1092,12 @@ static uint8_t face_editor(void) {
             cursor_place();
             dirty = 0;
         }
+        /* Parpadeo del cursor: cambia de color cada ED_FLASH_DIV frames. */
+        if (++ed_flash == ED_FLASH_DIV) {
+            ed_flash = 0;
+            ed_flash_on = (uint8_t)!ed_flash_on;
+        }
+        cursor_flash(ed_flash_on);
         vc_wait_vblank_end();
 
         /* --- Joystick, con autorepeat --- */
