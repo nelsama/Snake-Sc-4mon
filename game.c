@@ -54,7 +54,7 @@
  * ni de lejos (haria falta comer 830 frutas). Se reserva un tope holgado y, si
  * se alcanza, la partida termina como "victoria" igual que llenar el tablero.
  * 400 celdas = 800 bytes (ahorra ~870 B de BSS). */
-#define MAX_SNAKE     400
+#define MAX_SNAKE     290
 
 /* ===========================================================================
  * PATRONES
@@ -80,8 +80,16 @@ static const uint8_t tile_blank_p0[8] = { 0,0,0,0,0,0,0,0 };
 /* Muro del tablero: bloque solido (indice 3), patron propio en $0F. */
 static const uint8_t tile_wall_p0[8] = { 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF };
 
-/* Bloque solido en el COLOR 1 (lienzo del editor: el color lo pone la paleta). */
-static const uint8_t tile_piel_p1[8] = { 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF };
+/* Bloques solidos del lienzo del editor, uno por color de PAL_CANVAS:
+ *   TILE_SOL0 -> color 0 (blanco), TILE_SOL1 -> color 1 (azul),
+ *   TILE_SOL2 -> color 2 (amarillo).  El color 3 esta reservado (BG_COLOR). */
+/* Bloques solidos del lienzo, uno por indice de color de PAL_CANVAS
+ * (0 = azul, 1 = amarillo, 2 = blanco): el color lo pone el plano que se activa. */
+static const uint8_t tile_sol0_p0[8] = { 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF };
+static const uint8_t tile_sol1_p1[8] = { 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF };
+static const uint8_t tile_sol2_p0[8] = { 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00 };
+static const uint8_t tile_sol2_p1[8] = { 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF };
+static const uint8_t tile_zero[8]     = { 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00 };
 
 /* Cuerpo de la serpiente (simetrico), tile de fondo en $11. */
 static const uint8_t tile_body_p0[8] = { 0x3C,0x7E,0xFF,0xFF,0xFF,0xFF,0x7E,0x3C };
@@ -89,17 +97,17 @@ static const uint8_t tile_body_p1[8] = { 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
 
 /* Cabeza de la serpiente: PLANTILLA de fabrica (mirando a la DERECHA).
  * El dibujo editable vive en RAM (face_buf) y se convierte a planos al cargar.
- * Indices: 1 = transparente, 2 = blanco (ojo), 3 = azul (cuerpo),
- *          4 = amarillo (pupila). */
+ * Indices del editor: 0 = transparente, 1 = azul (cuerpo),
+ *                     2 = amarillo (pupila), 4 = blanco (ojo). */
 static const uint8_t face_factory[64] = {
-    1,1,3,3,3,3,3,1,
-    3,3,3,3,2,2,2,3,
-    3,3,3,2,2,4,2,3,
-    3,3,3,3,2,2,2,3,
-    3,3,3,3,2,2,2,3,
-    3,3,3,2,2,4,2,3,
-    3,3,3,3,2,2,2,3,
-    1,1,3,3,3,3,3,1
+    0,0,1,1,1,1,1,0,
+    1,1,1,1,4,4,4,1,
+    1,1,1,4,4,2,4,1,
+    1,1,1,1,4,4,4,1,
+    1,1,1,1,4,4,4,1,
+    1,1,1,4,4,2,4,1,
+    1,1,1,1,4,4,4,1,
+    0,0,1,1,1,1,1,0
 };
 
 /* Patron del cursor del editor de cara: marco de color 1 (relleno) y color 2
@@ -124,17 +132,25 @@ static const uint8_t tile_fruit_apple_p1[8] = { 0x18,0x18,0x00,0x00,0x00,0x00,0x
 #define TILE_BODY     0x11   /* cuerpo de la serpiente (simetrico)            */
 #define TILE_FRUIT_FRESA  0x12   /* fresa   (tile de fondo)                    */
 #define TILE_FRUIT_MANZANA 0x13  /* manzana (tile de fondo)                    */
-#define TILE_PIEL     0x14   /* bloque solido en color 1 (lienzo del editor) */
+#define TILE_SOL0     0x14   /* bloque solido color 0 (azul del lienzo)     */
+#define TILE_SOL1     0x15   /* bloque solido color 1 (amarillo del lienzo) */
+#define TILE_SOL2     0x16   /* bloque solido color 2 (blanco del lienzo)   */
 
 /* Indices de color del editor de cara (lo que se guarda en FACE.DAT).
- * Se numeran 1..4 para que el usuario vea exactamente esos numeros. */
-#define FC_TRANS   1   /* transparente (no pinta) */
-#define FC_BLANCO  2   /* ojo                     */
-#define FC_AZUL    3   /* cuerpo                  */
-#define FC_AMARILLO 4  /* pupila                  */
+ * Son los numeros que el usuario ve en el HUD:
+ *     0 = transparente (no pinta)
+ *     1 = azul    -> cuerpo
+ *     2 = amarillo -> pupila
+ *     4 = blanco  -> ojo
+ * El valor 3 queda libre. */
+#define FC_TRANS     0   /* transparente (no pinta) */
+#define FC_AZUL      1   /* cuerpo                  */
+#define FC_AMARILLO  2   /* pupila                  */
+#define FC_BLANCO    4   /* ojo                     */
 
-/* Color 0..3 del patron (= indice del editor - 1). */
-#define FC_COLOR(v)  ((uint8_t)((v) - 1))
+/* Indice de color dentro del patron (0..3). Es el valor guardado menos 1,
+ * salvo el blanco (4) que ocupa el hueco del 3. */
+#define FC_COLOR(v)  ((uint8_t)(((v) == FC_BLANCO) ? 3 : (v)))
 
 /* Sprite de la cabeza. */
 #define SPR_HEAD      0      /* slot de OAM de la cabeza                      */
@@ -163,8 +179,13 @@ static const uint8_t tile_fruit_apple_p1[8] = { 0x18,0x18,0x00,0x00,0x00,0x00,0x
 #define PAL_FRUIT    VC_BGPAL_1   /* paleta de las frutas: 1=rojo, 2=verde, 3=negro */
 #define PAL_TEXT     VC_BGPAL_0   /* tinta de texto blanca         */
 #define PAL_TITLE    VC_BGPAL_2   /* tinta del banner (verde)      */
-#define PAL_AMARILLO VC_BGPAL_3   /* amarillo para el lienzo del editor */
-/* NOTA: la paleta 3 NO se usa para texto: su color 3 es BG_COLOR (entrada 15),
+/* Paleta del LIENZO del editor. Se usa la paleta 2, de la que solo hace falta
+ * el COLOR 3 (tinta verde del texto), asi que los colores 0, 1 y 2 quedan libres:
+ *     color 0 = azul, color 1 = amarillo, color 2 = blanco
+ * La paleta 3 NO sirve: su color 3 es BG_COLOR (entrada 15) y no se puede tocar. */
+#define PAL_CANVAS   VC_BGPAL_2
+
+/* NOTA: la paleta 3 no se usa para texto: su color 3 es BG_COLOR (entrada 15),
  * asi que reescribirla cambiaria el color de fondo. Los subtitulos van en blanco. */
 
 /* Velocidad: frames entre pasos. Baja al subir de nivel (mas rapido). */
@@ -427,7 +448,7 @@ static uint8_t face_load(void) {
         uint8_t i;
         for (i = 0; i < 64; i++) {
             uint8_t v = face_buf[FACE_DATA + i];
-            if (v < FC_TRANS || v > FC_AMARILLO) {
+            if (v != FC_TRANS && v != FC_AZUL && v != FC_AMARILLO && v != FC_BLANCO) {
                 face_default();
                 return 0;
             }
@@ -861,9 +882,11 @@ static void setup_video(void) {
     vc_pal_set_bg(PAL_FRUIT, 1, VC_RGB444(0xF, 0x0, 0x0));  /* rojo  */
     vc_pal_set_bg(PAL_FRUIT, 2, VC_RGB444(0x0, 0xF, 0x0));  /* verde */
     vc_pal_set_bg(PAL_FRUIT, 3, VC_RGB444(0x0, 0x0, 0x0));  /* negro */
-    /* Amarillo del lienzo del editor. La paleta 3 se usa SOLO aqui; ojo con no
-     * tocar su color 3 (es BG_COLOR, entrada 15). El amarillo va en el 1. */
-    vc_pal_set_bg(PAL_AMARILLO, 1, VC_RGB444(0xF, 0xC, 0x0));  /* amarillo */
+    /* Paleta del LIENZO del editor (paleta 3): 0 = azul, 1 = amarillo,
+     * 2 = blanco. El color 3 NO se toca: es BG_COLOR (entrada 15). */
+    vc_pal_set_bg(PAL_CANVAS, 0, VC_RGB444(0x0, 0x0, 0xA));  /* azul     */
+    vc_pal_set_bg(PAL_CANVAS, 1, VC_RGB444(0xF, 0xF, 0x0));  /* amarillo */
+    vc_pal_set_bg(PAL_CANVAS, 2, VC_RGB444(0xF, 0xF, 0xF));  /* blanco   */
     /* Paletas del banner: solo se usa el COLOR 3 (tinta del texto de la fuente).
      * OJO: la paleta 3 NO se toca, porque su color 3 es la entrada 15 = BG_COLOR
      * (comparten entrada); reescribirla cambiaria el color de fondo. */
@@ -871,13 +894,12 @@ static void setup_video(void) {
 
     /* Reafirma el fondo NEGRO al final (entrada 15), por si algo la toco. */
     vc_set_bgcolor(VC_RGB444(0x0, 0x0, 0x0));
-    /* Cabeza: 0 = transparente, 1 = blanco (ojo), 2 = azul (cuerpo),
-     *         3 = amarillo (pupila).  El indice del editor 1..4 se guarda como
-     *         color 0..3 del patron (FC_COLOR). */
+    /* Cabeza: color de patron 0 = transparente, 1 = azul (cuerpo),
+     * 2 = amarillo (pupila), 3 = blanco (ojo). Coincide con FC_COLOR(). */
     vc_pal_set_spr(PAL_SNAKE_S, 0, VC_RGB444(0x0, 0x0, 0x0)); /* transparente */
-    vc_pal_set_spr(PAL_SNAKE_S, 1, VC_RGB444(0xF, 0xF, 0xF)); /* blanco (ojo) */
-    vc_pal_set_spr(PAL_SNAKE_S, 2, VC_RGB444(0x0, 0x0, 0xA)); /* azul (cuerpo) */
-    vc_pal_set_spr(PAL_SNAKE_S, 3, VC_RGB444(0xF, 0xF, 0x0)); /* amarillo (pupila) */
+    vc_pal_set_spr(PAL_SNAKE_S, 1, VC_RGB444(0x0, 0x0, 0xA)); /* azul (cuerpo) */
+    vc_pal_set_spr(PAL_SNAKE_S, 2, VC_RGB444(0xF, 0xF, 0x0)); /* amarillo (pupila) */
+    vc_pal_set_spr(PAL_SNAKE_S, 3, VC_RGB444(0xF, 0xF, 0xF)); /* blanco (ojo) */
 
     /* Patrones: muro, cuerpo y frutas (tiles de fondo) + cabeza (sprites).
      * Solo hay dibujo explicito para DERECHA y ARRIBA; IZQUIERDA y ABAJO se
@@ -886,7 +908,12 @@ static void setup_video(void) {
     vc_load_bg_pattern(TILE_BODY, tile_body_p0, tile_body_p1);
     vc_load_bg_pattern(TILE_FRUIT_FRESA,   tile_fruit_straw_p0, tile_fruit_straw_p1);
     vc_load_bg_pattern(TILE_FRUIT_MANZANA, tile_fruit_apple_p0, tile_fruit_apple_p1);
-    vc_load_bg_pattern(TILE_PIEL, tile_blank_p0, tile_piel_p1);
+    /* TILE_SOL0 = color 0 (azul): solo plano0.
+     * TILE_SOL1 = color 1 (amarillo): solo plano1.
+     * TILE_SOL2 = color 2 (blanco): ambos planos. */
+    vc_load_bg_pattern(TILE_SOL0, tile_sol0_p0, tile_zero);
+    vc_load_bg_pattern(TILE_SOL1, tile_zero,    tile_sol1_p1);
+    vc_load_bg_pattern(TILE_SOL2, tile_sol2_p0, tile_sol2_p1);
     face_load_patterns();   /* cabeza: 2 patrones generados desde face_buf */
     vc_load_spr_pattern(SPR_PAT_CUR, cur_p0, cur_p0);   /* marco del cursor */
     /* Colores del cursor: color 1 = el borde, color 2 = interior transparente
@@ -1038,10 +1065,16 @@ static void canvas_cell(uint8_t r, uint8_t c) {
     uint8_t x = (uint8_t)(CANVAS_X + c);
     uint8_t y = (uint8_t)(CANVAS_Y + r);
 
-    if (v == FC_TRANS)    paint(x, y, TILE_BLANK, PAL_TEXT);       /* transparente */
-    else if (v == FC_BLANCO)   paint(x, y, TILE_WALL,   PAL_WALL);  /* blanco      */
-    else if (v == FC_AZUL)     paint(x, y, TILE_BODY,   PAL_BODY);  /* azul        */
-    else                       paint(x, y, TILE_PIEL,   PAL_AMARILLO); /* amarillo */
+    if (v == FC_TRANS) {
+        paint(x, y, TILE_BLANK, PAL_CANVAS);
+    } else if (v == FC_AZUL) {
+        /* El tile del CUERPO pinta en el color 1; la paleta lo pone azul. */
+        paint(x, y, TILE_BODY, PAL_BODY);
+    } else if (v == FC_AMARILLO) {
+        paint(x, y, TILE_SOL1, PAL_CANVAS);   /* color 1 de PAL_CANVAS = amarillo */
+    } else {
+        paint(x, y, TILE_WALL, PAL_WALL);     /* color 3 = blanco */
+    }
 }
 
 /* Redibuja el lienzo completo. */
@@ -1078,10 +1111,15 @@ static void editor_hud(void) {
     b[0] = (char)('0' + ed_color);
     b[1] = 0;
     put_str_pal(7, 20, b, PAL_TITLE);
-    /* Leyenda: 1 transparente, 2 blanco, 3 azul, 4 amarillo. */
-    put_str_pal(1, 22, "1 VACIO 2 BLANCO", PAL_TEXT);
-    put_str_pal(1, 23, "3 AZUL  4 AMARILLO", PAL_TEXT);
-    put_str_pal(1, 25, "G GUARDAR   Q CANCELAR", PAL_TEXT);
+    put_str_pal(1, 23, "G GUARDAR   Q CANCELAR", PAL_TEXT);
+}
+
+/* Repinta el numero de color del HUD. */
+static void editor_num(void) {
+    char b[2];
+    b[0] = (char)('0' + ed_color);
+    b[1] = 0;
+    put_str_pal(7, 20, b, PAL_TITLE);
 }
 
 /* Pinta la celda del cursor con el color actual y pasa al siguiente. */
@@ -1091,7 +1129,11 @@ static void editor_paint(void) {
     FACE_AT(ed_cy, ed_cx) = ed_color;
     canvas_cell(ed_cy, ed_cx);
 
-    ed_color = (uint8_t)((ed_color >= FC_AMARILLO) ? FC_TRANS : ed_color + 1);
+    /* Ciclo: 0 -> 1 -> 2 -> 4 -> 0 (el 3 no existe). */
+    if      (ed_color == FC_TRANS)    ed_color = FC_AZUL;
+    else if (ed_color == FC_AZUL)     ed_color = FC_AMARILLO;
+    else if (ed_color == FC_AMARILLO) ed_color = FC_BLANCO;
+    else                              ed_color = FC_TRANS;
     b[0] = (char)('0' + ed_color);
     b[1] = 0;
     put_str_pal(7, 20, b, PAL_TITLE);
@@ -1181,10 +1223,10 @@ static uint8_t face_editor(void) {
                 case 'w': case 'W': if (ed_cy)     { ed_cy--; dirty = 1; } break;
                 case 's': case 'x': if (ed_cy < 7) { ed_cy++; dirty = 1; } break;
                 case ' ':          editor_paint(); break;
-                case '1': ed_color = FC_TRANS;    dirty = 1; break;
-                case '2': ed_color = FC_BLANCO;   dirty = 1; break;
-                case '3': ed_color = FC_AZUL;     dirty = 1; break;
-                case '4': ed_color = FC_AMARILLO; dirty = 1; break;
+                case '0': ed_color = FC_TRANS;    editor_num(); break;
+                case '1': ed_color = FC_AZUL;     editor_num(); break;
+                case '2': ed_color = FC_AMARILLO; editor_num(); break;
+                case '4': ed_color = FC_BLANCO;   editor_num(); break;
                 case 'g': case 'G':
                     if (face_save()) {
                         face_load_patterns();                    /* aplica al instante */
