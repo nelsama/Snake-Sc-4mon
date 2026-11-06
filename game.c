@@ -54,7 +54,7 @@
  * ni de lejos (haria falta comer 830 frutas). Se reserva un tope holgado y, si
  * se alcanza, la partida termina como "victoria" igual que llenar el tablero.
  * 400 celdas = 800 bytes (ahorra ~870 B de BSS). */
-#define MAX_SNAKE     100
+#define MAX_SNAKE     120
 
 /* ===========================================================================
  * PATRONES
