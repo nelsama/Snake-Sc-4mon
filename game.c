@@ -140,7 +140,7 @@ static const uint8_t tile_fruit_apple_p1[8] = { 0x18,0x18,0x00,0x00,0x00,0x00,0x
 #define TILE_SOL1     0x1B   /* pixel en color 1 */
 #define TILE_SOL2     0x1C   /* pixel en color 2 */
 
-/* Indices de color del editor de cara (lo que se guarda en FACE.DAT).
+/* Indices de color del editor de cara (lo que se guarda en SNAKE.DAT).
  * Son los numeros que el usuario ve en el HUD:
  *     0 = transparente (no pinta)
  *     1 = azul    -> cuerpo
@@ -205,7 +205,7 @@ static const uint8_t tile_fruit_apple_p1[8] = { 0x18,0x18,0x00,0x00,0x00,0x00,0x
  * la cabeza. Las celdas de FONDO y los SPRITES usan espacios de paleta
  * distintos, asi que no pueden compartir una celda: body_apply() escribe el
  * MISMO color en las dos paletas y asi el color es uno solo de cara al usuario.
- * El indice va en FACE.DAT (byte FACE_PAL). */
+ * El indice va en SNAKE.DAT (byte FACE_PAL). */
 #define BODY_COUNT   4
 #define BODY_DEF     0      /* 0 = azul: el de siempre */
 
@@ -270,7 +270,7 @@ static uint8_t  dead;              /* ya choco (pausa de muerte en curso)     */
 /* ===========================================================================
  * CARA EDITABLE (datos)
  * ===========================================================================
- * Un unico buffer que es a la vez el contenido de FACE.DAT y la matriz de
+ * Un unico buffer que es a la vez el contenido de SNAKE.DAT y la matriz de
  * edicion: [0..1] = magic "FC", [2..65] = 64 celdas (8x8),
  * [66] = color del cuerpo, [67..71] = reservado (sin usar).
  *
@@ -469,13 +469,13 @@ static void face_default(void) {
     for (i = 1; i < 6; i++) face_buf[FACE_PAL + i] = 0;   /* resto reservado */
 }
 
-/* Carga la cara desde FACE.DAT (MicroFS de la ROM API).
+/* Carga la cara desde SNAKE.DAT (MicroFS de la ROM API).
  * Devuelve 1 si se cargo una cara valida; 0 si no habia SD/fichero o estaba
  * corrupto (en ese caso deja la de fabrica). */
 static uint8_t face_load(void) {
     face_default();
 
-    if (rom_mfs_open("FACE.DAT") != MFS_OK) return 0;
+    if (rom_mfs_open("SNAKE.DAT") != MFS_OK) return 0;
     if (rom_mfs_get_size() != FACE_LEN ||
         rom_mfs_read_via_zp(face_buf, FACE_LEN) != FACE_LEN) {
         rom_mfs_close();
@@ -505,13 +505,13 @@ static uint8_t face_load(void) {
     return 1;
 }
 
-/* Guarda la cara en FACE.DAT. Devuelve 1 si todo fue bien. */
+/* Guarda la cara en SNAKE.DAT. Devuelve 1 si todo fue bien. */
 static uint8_t face_save(void) {
     face_buf[0] = FACE_MAGIC0;
     face_buf[1] = FACE_MAGIC1;
 
-    rom_mfs_delete("FACE.DAT");    /* create no sobrescribe */
-    if (rom_mfs_create_via_zp("FACE.DAT", FACE_LEN) != MFS_OK) return 0;
+    rom_mfs_delete("SNAKE.DAT");    /* create no sobrescribe */
+    if (rom_mfs_create_via_zp("SNAKE.DAT", FACE_LEN) != MFS_OK) return 0;
     if (rom_mfs_write_via_zp(face_buf, FACE_LEN) != FACE_LEN) {
         rom_mfs_close();
         return 0;
@@ -1102,7 +1102,7 @@ static uint8_t play_game(void) {
  * ===========================================================================
  * Lienzo 8x8 = 8x8 celdas de pantalla. El cursor es un sprite con marco.
  * Se pinta con el boton de fuego, ciclando el color (1 cuerpo, 2 ojo, 3 pupila).
- * SALVAR escribe FACE.DAT por la ROM API (MicroFS) y recarga los patrones.
+ * SALVAR escribe SNAKE.DAT por la ROM API (MicroFS) y recarga los patrones.
  *
  * Entrada:
  *   joystick : stick mueve, fuego pinta
@@ -1627,9 +1627,9 @@ int main(void) {
     joy_init();     /* bits 3-7 del Puerto 1 como entrada (joystick) */
     hs_reset();     /* tabla de records vacia (dura toda la sesion) */
 
-    /* Cara: de FACE.DAT si existe y es valida, si no la de fabrica. */
+    /* Cara: de SNAKE.DAT si existe y es valida, si no la de fabrica. */
     face_load();
-    body_apply();      /* el color del cuerpo segun FACE.DAT */
+    body_apply();      /* el color del cuerpo segun SNAKE.DAT */
     face_load_patterns();
 
     /* Bucle principal: banner -> jugar / editar cara / salir. Tras cada

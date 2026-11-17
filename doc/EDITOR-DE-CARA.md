@@ -1,4 +1,4 @@
-# Editor de cara — diseño y formato de `FACE.DAT`
+# Editor de cara — diseño y formato de `SNAKE.DAT`
 
 La cabeza del gusano no es un dibujo fijo: se diseña **dentro del juego**, se
 guarda en la SD y se recupera en la siguiente partida.
@@ -47,7 +47,7 @@ hacen falta cinco estados, así que el transparente ocupa un índice propio:
 
 `FC_COLOR(v)` hace la conversión: el 4 (ojo) pasa a 3 y el resto se deja igual.
 El salto del 3 es deliberado: permite numerar como ve el usuario (0/1/2/4) sin
-gastar un byte más en `FACE.DAT`.
+gastar un byte más en `SNAKE.DAT`.
 
 > ⚠️ En el **fondo** el color 0 es siempre transparente (`BG_COLOR`), así que el
 > lienzo no puede pintar con el índice 0 de una paleta. Por eso el azul, el
@@ -78,7 +78,7 @@ rot[r][c] = orig[c][7 - r];
 
 ---
 
-## 4. Formato de `FACE.DAT`
+## 4. Formato de `SNAKE.DAT`
 
 72 bytes, sin cabecera ni checksum:
 
@@ -124,7 +124,7 @@ Así el recuadro, el lienzo y el gusano en juego enseñan siempre el mismo color
 
 ## 6. Al guardar
 
-`G` escribe `FACE.DAT`, vuelve a cargar los patrones **dentro del VBLANK** y
+`G` escribe `SNAKE.DAT`, vuelve a cargar los patrones **dentro del VBLANK** y
 regenera las paletas con `body_apply()`. Si la SD falla se avisa en pantalla
 (`ERROR SD`) y **no se sale**, para no perder el dibujo.
 
@@ -141,4 +141,4 @@ Ninguno de estos vuelve a ser un misterio si aparecen:
 | El cursor se pierde sobre el ojo blanco | marco de un solo color (ahora alterna blanco/negro) |
 | Sale basura tras el número de color | `put_str_pal(&c, ...)` con un `char` suelto, no una cadena `\0` |
 | El editor se cuelga al arrancar | `vc_pal_set_*` / `vc_load_spr_pattern` llamados **fuera** del VBLANK |
-| `FACE.DAT` no aparece en la SD | el emulador abrió **otra** imagen (ver `TIPS-Y-TRAMPA.md` §6.1) |
+| `SNAKE.DAT` no aparece en la SD | el emulador abrió **otra** imagen (ver `TIPS-Y-TRAMPA.md` §6.1) |

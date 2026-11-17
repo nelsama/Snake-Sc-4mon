@@ -124,7 +124,7 @@ en la SD. El detalle está en **`doc/EDITOR-DE-CARA.md`**; en resumen:
 - Con **un solo glifo mirando a la derecha** se sacan las cuatro direcciones: las
   otras tres salen de girarlo 90° en software (la de arriba) y de los flips del
   sprite (`VC_SPR_FLIP_X` para izquierda, `VC_SPR_FLIP_Y` para abajo).
-- Se guarda en **`FACE.DAT`** (72 B) en la SD mediante la ROM API del monitor.
+- Se guarda en **`SNAKE.DAT`** (72 B) en la SD mediante la ROM API del monitor.
 - La **cara de fábrica** se usa si el fichero no existe o no es válido.
 
 ### Color del cuerpo, elegible
@@ -136,7 +136,7 @@ Junto al lienzo hay un recuadro **`CUERPO`**; el cursor se mueve libre entre el
 Es **un solo color** para todo el gusano. Como las celdas de fondo y los sprites
 usan espacios de paleta distintos, no pueden compartir la paleta: `body_apply()`
 escribe el mismo RGB en las tres paletas que lo usan (tile del cuerpo, sprite de
-la cabeza y lienzo del editor). El índice se guarda en `FACE.DAT`.
+la cabeza y lienzo del editor). El índice se guarda en `SNAKE.DAT`.
 
 ### Sonido (SID 6581, compatible C64)
 
@@ -300,7 +300,7 @@ snake/
 │   └── programa.cfg    config del linker (copia de la lib)
 ├── doc/
 │   ├── VIDEO-LIB.md    manual de la biblioteca
-│   ├── EDITOR-DE-CARA.md  editor, formato de FACE.DAT y color del cuerpo
+│   ├── EDITOR-DE-CARA.md  editor, formato de SNAKE.DAT y color del cuerpo
 │   ├── TIPS-Y-TRAMPA.md   lecciones y trampas (para empezar un juego nuevo)
 │   └── CORE-BUG-sprite-right-edge.md
 ├── build/              objetos
